@@ -153,6 +153,9 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = requests.get("https://api.binance.com/api/v3/klines",
             params={"symbol":"BTCUSDT","interval":"1h","limit":100}, timeout=10).json()
+        if not data or not isinstance(data, list):
+            await update.message.reply_text("❌ Market data unavailable. Try again.")
+            return
         closes = [float(x[4]) for x in data]
         df = pd.DataFrame(closes, columns=["close"])
         df["rsi"] = ta.momentum.RSIIndicator(df["close"]).rsi()
