@@ -156,14 +156,17 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         closes = [float(x[4]) for x in data]
         df = pd.DataFrame(closes, columns=["close"])
         df["rsi"] = ta.momentum.RSIIndicator(df["close"]).rsi()
-        fear_greed = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
+        fg_resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
+        fg_data = fg_resp.get("data", [{"value":"50","value_classification":"Neutral"}])[0]
+        fg_value = fg_data.get("value", "50")
+        fg_label = fg_data.get("value_classification", "Neutral")
         msg = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=500,
             messages=[{"role":"user","content":f"""
 You are a crypto analyst. Give a Bitcoin signal.
 RSI: {round(float(df['rsi'].iloc[-1]), 2)}
-Fear & Greed: {fear_greed['data'][0]['value']} ({fear_greed['data'][0]['value_classification']})
+Fear & Greed: {fg_value} ({fg_label})
 Current Price: ${closes[-1]:,.2f}
 Respond in this exact format:
 DIRECTION: UP or DOWN
@@ -178,7 +181,7 @@ REASON: (one sentence)
 {direction} *BITCOIN SIGNAL - GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
 💰 Price: ${closes[-1]:,.2f}
-😱 Fear & Greed: {fear_greed['data'][0]['value']} ({fear_greed['data'][0]['value_classification']})
+😱 Fear & Greed: {fg_value} ({fg_label})
 📊 RSI: {round(float(df['rsi'].iloc[-1]), 2)}
 ━━━━━━━━━━━━━━━━━━━━
 {signal_text}
