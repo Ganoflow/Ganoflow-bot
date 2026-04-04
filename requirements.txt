@@ -4,4 +4,3 @@ pandas
 ta
 python-telegram-bot==20.7
 feedparser
-httpx==0.27.0
