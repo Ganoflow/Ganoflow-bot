@@ -2,5 +2,5 @@ anthropic
 requests
 pandas
 ta
-python-telegram-bot==20.7
+python-telegram-bot==21.3
 feedparser
