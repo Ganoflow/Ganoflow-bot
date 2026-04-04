@@ -239,9 +239,14 @@ async def main():
 
     await app.initialize()
     await app.start()
-    await app.updater.start_polling()
+    
+    try:
+        await app.updater.start_polling(drop_pending_updates=True)
+    except Exception as e:
+        print(f"Polling error: {e}")
 
     print("✅ Bot is running!")
+    await monitor()
 
     # Run signal monitor in parallel
     await monitor()
