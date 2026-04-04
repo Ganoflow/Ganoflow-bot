@@ -14,11 +14,20 @@ CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 # Plan channels - update with real channel IDs
+def parse_channel(val):
+    if not val or val == "0":
+        return 0
+    val = val.strip().strip('"').strip("'")
+    try:
+        return int(val)
+    except:
+        return val if val.startswith('@') else 0
+
 CHANNELS = {
-    "free":     int(os.environ.get("TG_FREE_CHANNEL", "0")),
-    "basic":    int(os.environ.get("TG_BASIC_CHANNEL", "0")),
-    "standard": int(os.environ.get("TG_STANDARD_CHANNEL", "0")),
-    "premium":  int(os.environ.get("TG_PREMIUM_CHANNEL", "0")),
+    "free":     parse_channel(os.environ.get("TG_FREE_CHANNEL", "0")),
+    "basic":    parse_channel(os.environ.get("TG_BASIC_CHANNEL", "0")),
+    "standard": parse_channel(os.environ.get("TG_STANDARD_CHANNEL", "0")),
+    "premium":  parse_channel(os.environ.get("TG_PREMIUM_CHANNEL", "0")),
 }
 
 STABLECOINS = ["usdt","usdc","busd","dai","tusd","usds","usdp","usde","usd1",
