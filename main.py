@@ -151,14 +151,10 @@ Commands:
 async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Analyzing market... Please wait...")
     try:
-        data = requests.get("https://api.binance.com/api/v3/klines",
-            params={"symbol":"BTCUSDT","interval":"1h","limit":100}, timeout=10).json()
-        if not data or not isinstance(data, list):
-            await update.message.reply_text("❌ Market data unavailable. Try again.")
-            return
-        closes = [float(x[4]) for x in data]
-        df = pd.DataFrame(closes, columns=["close"])
-        df["rsi"] = ta.momentum.RSIIndicator(df["close"]).rsi()
+        btc = requests.get("https://api.coingecko.com/api/v3/simple/price",
+            params={"ids":"bitcoin","vs_currencies":"usd","include_24hr_change":"true"}, timeout=10).json()
+        price = btc["bitcoin"]["usd"]
+        change = btc["bitcoin"]["usd_24h_change"]
         fg_resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
         fg_data = fg_resp.get("data", [{"value":"50","value_classification":"Neutral"}])[0]
         fg_value = fg_data.get("value", "50")
@@ -168,9 +164,9 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=500,
             messages=[{"role":"user","content":f"""
 You are a crypto analyst. Give a Bitcoin signal.
-RSI: {round(float(df['rsi'].iloc[-1]), 2)}
+Current Price: ${price:,.2f}
+24h Change: {change:.2f}%
 Fear & Greed: {fg_value} ({fg_label})
-Current Price: ${closes[-1]:,.2f}
 Respond in this exact format:
 DIRECTION: UP or DOWN
 PERCENTAGE: X.X%
@@ -183,9 +179,9 @@ REASON: (one sentence)
         await update.message.reply_text(f"""
 {direction} *BITCOIN SIGNAL - GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
-💰 Price: ${closes[-1]:,.2f}
+💰 Price: ${price:,.2f}
+📊 24h Change: {change:.2f}%
 😱 Fear & Greed: {fg_value} ({fg_label})
-📊 RSI: {round(float(df['rsi'].iloc[-1]), 2)}
 ━━━━━━━━━━━━━━━━━━━━
 {signal_text}
 ━━━━━━━━━━━━━━━━━━━━
