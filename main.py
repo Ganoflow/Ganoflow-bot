@@ -51,40 +51,49 @@ def get_top_coins():
         print(f"get_top_coins error: {e}")
         return []
 
-def generate_signal(coin_name, price, change_pct, fear_greed):
+def generate_signal(coin_name, symbol, price, change_pct, fear_greed):
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=200,
+            max_tokens=300,
             messages=[{"role":"user","content":f"""
 You are the world's best crypto analyst.
-{coin_name} just moved {change_pct:+.2f}% - give an urgent signal.
+{coin_name} ({symbol}) just moved {change_pct:+.2f}%.
 Current Price: ${price:,.4f}
-Price Change: {change_pct:+.2f}%
-Fear & Greed: {fear_greed}
-Respond ONLY in this exact format:
-DIRECTION: UP or DOWN
-PERCENTAGE: X.X%
+Fear & Greed Index: {fear_greed}
+
+Respond ONLY in this exact format (no extra text):
+DIRECTION: LONG or SHORT
+ENTRY: $X.XXXX - $X.XXXX
+TP1: $X.XXXX
+TP2: $X.XXXX
+TP3: $X.XXXX
+STOP LOSS: $X.XXXX
 CONFIDENCE: XX%
-REASON: (one sentence)
+REASON: (one sentence max)
             """}]
         )
         return message.content[0].text
     except Exception as e:
-        return f"DIRECTION: UP\nPERCENTAGE: 2.0%\nCONFIDENCE: 50%\nREASON: Error: {e}"
+        sl = price * 0.97 if price > 0 else 0
+        tp1 = price * 1.02
+        tp2 = price * 1.04
+        tp3 = price * 1.06
+        return f"DIRECTION: LONG\nENTRY: ${price:.4f} - ${price*1.005:.4f}\nTP1: ${tp1:.4f}\nTP2: ${tp2:.4f}\nTP3: ${tp3:.4f}\nSTOP LOSS: ${sl:.4f}\nCONFIDENCE: 50%\nREASON: Auto signal"
 
 async def send_signal(plan, coin_name, symbol, price, change_pct, signal):
-    direction_emoji = "📈" if "UP" in signal else "📉"
+    direction_emoji = "📈" if "LONG" in signal else "📉"
     msg = f"""
 ⚡ *LIVE SIGNAL - GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
-🪙 {symbol} - {coin_name}
-🔔 Moved {change_pct:+.2f}%!
-💰 Price: ${price:,.4f}
+🪙 *{symbol}/USDT* — {coin_name}
+🔔 Moved *{change_pct:+.2f}%*
+💰 Price: *${price:,.4f}*
 ━━━━━━━━━━━━━━━━━━━━
 {direction_emoji} {signal}
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ For reference only. Trade at your own risk.
+⚠️ DYOR. Trade at your own risk.
+🌐 ganoflow.com
     """
     channel_id = CHANNELS.get(plan, 0)
     if not channel_id or channel_id == 0:
@@ -119,11 +128,11 @@ async def monitor():
                     continue
                 prev_price = prev_prices[coin_id]
                 change_pct = ((current_price - prev_price) / prev_price) * 100
-                if abs(change_pct) >= 1.0:
+                if abs(change_pct) >= 0.3:
                     now = time.time()
                     if now - last_signal_times.get(coin_id, 0) > 300:
                         print(f"\n🔔 {symbol} moved {change_pct:+.2f}%!")
-                        signal = generate_signal(name, current_price, change_pct, fg_value)
+                        signal = generate_signal(name, symbol, current_price, change_pct, fg_value)
                         if coin_id in ["bitcoin", "ethereum"]:
                             await send_signal("free", name, symbol, current_price, change_pct, signal)
                         if i < 10:
@@ -141,10 +150,14 @@ async def monitor():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("""
 👋 Welcome to GanoFlow!
+
+🤖 AI-powered crypto signals with real-time market analysis.
+
 Commands:
 /signal - Get latest Bitcoin signal
 /subscribe - View our plans
 /help - Show this menu
+
 ⚠️ For reference only. Trade at your own risk.
     """)
 
@@ -162,33 +175,19 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fg_data = fg_resp.get("data", [{"value":"50","value_classification":"Neutral"}])[0]
         fg_value = fg_data.get("value", "50")
         fg_label = fg_data.get("value_classification", "Neutral")
-        msg = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            messages=[{"role":"user","content":f"""
-You are a crypto analyst. Give a Bitcoin signal.
-Current Price: ${price:,.2f}
-24h Change: {change:.2f}%
-Fear & Greed: {fg_value} ({fg_label})
-Respond in this exact format:
-DIRECTION: UP or DOWN
-PERCENTAGE: X.X%
-CONFIDENCE: XX%
-REASON: (one sentence)
-            """}]
-        )
-        signal_text = msg.content[0].text
-        direction = "📈" if "UP" in signal_text else "📉"
+        signal_text = generate_signal("Bitcoin", "BTC", price, change, fg_value)
+        direction = "📈" if "LONG" in signal_text else "📉"
         await update.message.reply_text(f"""
 {direction} *BITCOIN SIGNAL - GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
-💰 Price: ${price:,.2f}
-📊 24h Change: {change:.2f}%
-😱 Fear & Greed: {fg_value} ({fg_label})
+💰 Price: *${price:,.2f}*
+📊 24h Change: *{change:.2f}%*
+😱 Fear & Greed: *{fg_value} ({fg_label})*
 ━━━━━━━━━━━━━━━━━━━━
 {signal_text}
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ For reference only. Trade at your own risk.
+⚠️ DYOR. Trade at your own risk.
+🌐 ganoflow.com
         """, parse_mode="Markdown")
     except Exception as e:
         print(f"signal_cmd error: {e}")
@@ -196,20 +195,29 @@ REASON: (one sentence)
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("""
-💎 GanoFlow Plans
-🆓 Free — BTC + ETH only
-⚡ Basic — $29/mo — Top 10 coins
-🚀 Standard — $59/mo — Top 25 coins
-👑 Premium — $99/mo — Top 50 coins
-🌐 https://ganoflow.com
-    """)
+💎 *GanoFlow Plans*
+━━━━━━━━━━━━━━━━━━━━
+🆓 *Free* — BTC + ETH signals only
+⚡ *Basic* — $29/mo — Top 10 coins
+🚀 *Standard* — $59/mo — Top 25 coins
+👑 *Premium* — $99/mo — Top 50 coins + Priority support
+━━━━━━━━━━━━━━━━━━━━
+✨ All plans include:
+- Live signals on 0.3%+ market moves
+- Entry, TP1/TP2/TP3 & Stop Loss
+- AI-powered LONG/SHORT signal
+- Confidence score & reasoning
+- 24/7 automated analysis
+━━━━━━━━━━━━━━━━━━━━
+🌐 Subscribe: https://ganoflow.com
+    """, parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     msg = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=300,
-        messages=[{"role":"user","content":f"You are GanoFlow customer support. Be helpful and concise. User: {user_message}"}]
+        messages=[{"role":"user","content":f"You are GanoFlow's customer support for an AI crypto signal service. Be helpful, professional and concise. User: {user_message}"}]
     )
     await update.message.reply_text(msg.content[0].text)
 
