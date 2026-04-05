@@ -101,7 +101,7 @@ async def monitor():
     while True:
         try:
             fear_greed = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
-            fg_value = fear_greed["data"][0]["value"]
+            fg_value = fear_greed.get("data", [{"value":"50"}])[0].get("value", "50")
             coins = get_top_coins()
             if not coins:
                 await asyncio.sleep(60)
@@ -153,6 +153,9 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         btc = requests.get("https://api.coingecko.com/api/v3/simple/price",
             params={"ids":"bitcoin","vs_currencies":"usd","include_24hr_change":"true"}, timeout=10).json()
+        if "bitcoin" not in btc:
+            await update.message.reply_text("❌ API rate limit. Try again in 1 minute.")
+            return
         price = btc["bitcoin"]["usd"]
         change = btc["bitcoin"]["usd_24h_change"]
         fg_resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
@@ -212,6 +215,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     print("🚀 GanoFlow Bot + Signal Monitor Starting...")
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.delete_webhook(drop_pending_updates=True)
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
@@ -220,10 +225,7 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await app.initialize()
     await app.start()
-    try:
-        await app.updater.start_polling(drop_pending_updates=True)
-    except Exception as e:
-        print(f"Polling error (ignored): {e}")
+    await app.updater.start_polling(drop_pending_updates=True)
     print("✅ Bot is running!")
     await monitor()
 
