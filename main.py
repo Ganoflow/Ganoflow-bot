@@ -1,10 +1,11 @@
 import anthropic
-import requests
 import asyncio
+import json
 import time
 import os
-import pandas as pd
-import ta
+import websockets
+import requests
+from collections import deque
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime
@@ -28,213 +29,318 @@ CHANNELS = {
     "premium":  parse_channel(os.environ.get("TG_PREMIUM_CHANNEL", "0")),
 }
 
-STABLECOINS = ["usdt","usdc","busd","dai","tusd","usds","usdp","usde","usd1",
-               "usdf","usdg","usyc","pyusd","buidl","frax","lusd","gusd","usdd",
-               "fdusd","crvusd","rain","xaut","paxg","rlusd","bfusd","usdy","wlfi"]
+PLANS = {
+    "free":     {"coins": ["btcusdt", "ethusdt"], "threshold": 1.0},
+    "basic":    {"coins": ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt"], "threshold": 0.8},
+    "standard": {"coins": ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "adausdt", "avaxusdt"], "threshold": 0.5},
+    "premium":  {"coins": ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "adausdt", "avaxusdt", "dotusdt", "linkusdt", "dogeusdt"], "threshold": 0.3},
+}
+
+COIN_NAMES = {
+    "btcusdt": "Bitcoin", "ethusdt": "Ethereum", "solusdt": "Solana",
+    "bnbusdt": "BNB", "xrpusdt": "XRP", "adausdt": "Cardano",
+    "avaxusdt": "Avalanche", "dotusdt": "Polkadot", "linkusdt": "Chainlink",
+    "dogeusdt": "Dogecoin"
+}
 
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+price_history = {coin: deque(maxlen=50) for coin in COIN_NAMES}
 prev_prices = {}
 last_signal_times = {}
+latest_prices = {}
 
-def get_top_coins():
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {"vs_currency":"usd","order":"market_cap_desc","per_page":100,"page":1,"sparkline":False}
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        if not isinstance(data, list):
-            print(f"CoinGecko error: {data}")
-            return []
-        filtered = [c for c in data if isinstance(c, dict) and c.get("symbol","").lower() not in STABLECOINS]
-        return filtered[:50]
-    except Exception as e:
-        print(f"get_top_coins error: {e}")
-        return []
+# ─── TECHNICAL ANALYSIS (zero API cost) ─────────────────────────────────────
 
-def generate_signal(coin_name, symbol, price, change_pct, fear_greed):
-    try:
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=300,
-            messages=[{"role":"user","content":f"""
-You are the world's best crypto analyst.
-{coin_name} ({symbol}) just moved {change_pct:+.2f}%.
-Current Price: ${price:,.4f}
-Fear & Greed Index: {fear_greed}
+def calc_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return 50.0
+    gains, losses = [], []
+    prices_list = list(prices)
+    for i in range(1, len(prices_list)):
+        diff = prices_list[i] - prices_list[i-1]
+        gains.append(max(diff, 0))
+        losses.append(max(-diff, 0))
+    if len(gains) < period:
+        return 50.0
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 1)
 
-Respond ONLY in this exact format (no extra text):
-DIRECTION: LONG or SHORT
-ENTRY: $X.XXXX - $X.XXXX
-TP1: $X.XXXX
-TP2: $X.XXXX
-TP3: $X.XXXX
-STOP LOSS: $X.XXXX
-CONFIDENCE: XX%
-REASON: (one sentence max)
-            """}]
+def calc_probability(rsi, change_pct):
+    if rsi < 30:
+        up_base = 70
+    elif rsi < 45:
+        up_base = 60
+    elif rsi > 70:
+        up_base = 30
+    elif rsi > 55:
+        up_base = 45
+    else:
+        up_base = 50
+    up_base += min(max(change_pct * 3, -15), 15)
+    up_pct = max(20, min(80, round(up_base)))
+    return up_pct, 100 - up_pct
+
+def calc_targets(price, change_pct):
+    v = abs(change_pct) / 100
+    if change_pct > 0:
+        return (
+            round(price * 0.999, 4), round(price * 1.001, 4),
+            round(price * (1 + max(v*2, 0.01)), 4),
+            round(price * (1 + max(v*4, 0.02)), 4),
+            round(price * (1 + max(v*6, 0.03)), 4),
+            round(price * (1 - max(v*2.5, 0.015)), 4),
         )
-        return message.content[0].text
-    except Exception as e:
-        sl = price * 0.97 if price > 0 else 0
-        tp1 = price * 1.02
-        tp2 = price * 1.04
-        tp3 = price * 1.06
-        return f"DIRECTION: LONG\nENTRY: ${price:.4f} - ${price*1.005:.4f}\nTP1: ${tp1:.4f}\nTP2: ${tp2:.4f}\nTP3: ${tp3:.4f}\nSTOP LOSS: ${sl:.4f}\nCONFIDENCE: 50%\nREASON: Auto signal"
+    else:
+        return (
+            round(price * 0.999, 4), round(price * 1.001, 4),
+            round(price * (1 - max(v*2, 0.01)), 4),
+            round(price * (1 - max(v*4, 0.02)), 4),
+            round(price * (1 - max(v*6, 0.03)), 4),
+            round(price * (1 + max(v*2.5, 0.015)), 4),
+        )
 
-async def send_signal(plan, coin_name, symbol, price, change_pct, signal):
-    direction_emoji = "📈" if "LONG" in signal else "📉"
-    msg = f"""
-⚡ *LIVE SIGNAL - GanoFlow*
-━━━━━━━━━━━━━━━━━━━━
-🪙 *{symbol}/USDT* — {coin_name}
-🔔 Moved *{change_pct:+.2f}%*
-💰 Price: *${price:,.4f}*
-━━━━━━━━━━━━━━━━━━━━
-{direction_emoji} {signal}
-━━━━━━━━━━━━━━━━━━━━
-⚠️ DYOR. Trade at your own risk.
-🌐 ganoflow.com
-    """
+def fmt(price):
+    if price >= 1000:
+        return f"${price:,.2f}"
+    elif price >= 1:
+        return f"${price:,.4f}"
+    else:
+        return f"${price:.6f}"
+
+# ─── SEND ────────────────────────────────────────────────────────────────────
+
+async def send_to_channel(plan, message):
     channel_id = CHANNELS.get(plan, 0)
     if not channel_id or channel_id == 0:
         return
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
-        await bot.send_message(chat_id=channel_id, text=msg, parse_mode="Markdown")
+        await bot.send_message(chat_id=channel_id, text=message, parse_mode="Markdown")
     except Exception as e:
         print(f"Error sending to {plan}: {e}")
 
-async def monitor():
-    global prev_prices, last_signal_times
-    print("🚀 GanoFlow Signal Monitor Started!")
-    while True:
-        try:
-            fear_greed = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
-            fg_value = fear_greed.get("data", [{"value":"50"}])[0].get("value", "50")
-            coins = get_top_coins()
-            if not coins:
-                await asyncio.sleep(60)
-                continue
-            print(f"\n📊 Checking {len(coins)} coins... [{datetime.now().strftime('%H:%M:%S')}]")
-            for i, coin in enumerate(coins):
-                coin_id = coin.get("id", "")
-                symbol = coin.get("symbol", "").upper()
-                name = coin.get("name", "")
-                current_price = coin.get("current_price", 0)
-                if not current_price:
-                    continue
-                if coin_id not in prev_prices:
-                    prev_prices[coin_id] = current_price
-                    continue
-                prev_price = prev_prices[coin_id]
-                change_pct = ((current_price - prev_price) / prev_price) * 100
-                if abs(change_pct) >= 0.3:
-                    now = time.time()
-                    if now - last_signal_times.get(coin_id, 0) > 300:
-                        print(f"\n🔔 {symbol} moved {change_pct:+.2f}%!")
-                        signal = generate_signal(name, symbol, current_price, change_pct, fg_value)
-                        if coin_id in ["bitcoin", "ethereum"]:
-                            await send_signal("free", name, symbol, current_price, change_pct, signal)
-                        if i < 10:
-                            await send_signal("basic", name, symbol, current_price, change_pct, signal)
-                        if i < 25:
-                            await send_signal("standard", name, symbol, current_price, change_pct, signal)
-                        await send_signal("premium", name, symbol, current_price, change_pct, signal)
-                        prev_prices[coin_id] = current_price
-                        last_signal_times[coin_id] = now
-            await asyncio.sleep(30)
-        except Exception as e:
-            print(f"\n❌ Monitor error: {e}")
-            await asyncio.sleep(60)
+async def broadcast_signal(symbol, price, change_pct, rsi):
+    name = COIN_NAMES.get(symbol, symbol.upper())
+    sym = symbol.replace("usdt", "").upper()
+    direction = "LONG" if change_pct > 0 else "SHORT"
+    emoji = "📈" if change_pct > 0 else "📉"
+    up_pct, down_pct = calc_probability(rsi, change_pct)
+    e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, change_pct)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""
-👋 Welcome to GanoFlow!
+    if rsi < 30:
+        rsi_label = "Oversold 🟢"
+    elif rsi > 70:
+        rsi_label = "Overbought 🔴"
+    else:
+        rsi_label = "Neutral ⚪"
 
-🤖 AI-powered crypto signals with real-time market analysis.
-
-Commands:
-/signal - Get latest Bitcoin signal
-/subscribe - View our plans
-/help - Show this menu
-
-⚠️ For reference only. Trade at your own risk.
-    """)
-
-async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Analyzing market... Please wait...")
-    try:
-        btc = requests.get("https://api.coingecko.com/api/v3/simple/price",
-            params={"ids":"bitcoin","vs_currencies":"usd","include_24hr_change":"true"}, timeout=10).json()
-        if "bitcoin" not in btc:
-            await update.message.reply_text("❌ API rate limit. Try again in 1 minute.")
-            return
-        price = btc["bitcoin"]["usd"]
-        change = btc["bitcoin"]["usd_24h_change"]
-        fg_resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
-        fg_data = fg_resp.get("data", [{"value":"50","value_classification":"Neutral"}])[0]
-        fg_value = fg_data.get("value", "50")
-        fg_label = fg_data.get("value_classification", "Neutral")
-        signal_text = generate_signal("Bitcoin", "BTC", price, change, fg_value)
-        direction = "📈" if "LONG" in signal_text else "📉"
-        await update.message.reply_text(f"""
-{direction} *BITCOIN SIGNAL - GanoFlow*
+    msg = f"""⚡ *LIVE SIGNAL — GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
-💰 Price: *${price:,.2f}*
-📊 24h Change: *{change:.2f}%*
-😱 Fear & Greed: *{fg_value} ({fg_label})*
+🪙 *{sym}/USDT* — {name}
+🔔 Moved *{change_pct:+.2f}%*
+💰 *{fmt(price)}*
 ━━━━━━━━━━━━━━━━━━━━
-{signal_text}
+{emoji} *{direction}*
+🐂 UP *{up_pct}%* | 🐻 DOWN *{down_pct}%*
+
+ENTRY　　{fmt(e_low)} — {fmt(e_high)}
+TP1　　　{fmt(tp1)}
+TP2　　　{fmt(tp2)}
+TP3　　　{fmt(tp3)}
+STOP　　 {fmt(sl)}
+
+📊 RSI *{rsi}* — {rsi_label}
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ DYOR. Trade at your own risk.
-🌐 ganoflow.com
-        """, parse_mode="Markdown")
+🌐 ganoflow.com"""
+
+    for plan, config in PLANS.items():
+        if symbol in config["coins"] and abs(change_pct) >= config["threshold"]:
+            await send_to_channel(plan, msg)
+            print(f"✅ Sent to {plan}")
+
+# ─── WEBSOCKET ───────────────────────────────────────────────────────────────
+
+async def websocket_monitor():
+    streams = "/".join([f"{coin}@kline_1m" for coin in COIN_NAMES])
+    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+    print("🔌 Connecting to Binance WebSocket...")
+    while True:
+        try:
+            async with websockets.connect(url, ping_interval=20) as ws:
+                print("✅ WebSocket connected!")
+                async for raw in ws:
+                    data = json.loads(raw)
+                    kline = data.get("data", {}).get("k", {})
+                    if not kline:
+                        continue
+                    symbol = kline.get("s", "").lower()
+                    close = float(kline.get("c", 0))
+                    is_closed = kline.get("x", False)
+                    if not close or symbol not in COIN_NAMES:
+                        continue
+                    latest_prices[symbol] = close
+                    if is_closed:
+                        price_history[symbol].append(close)
+                        if symbol not in prev_prices:
+                            prev_prices[symbol] = close
+                            continue
+                        prev = prev_prices[symbol]
+                        change_pct = ((close - prev) / prev) * 100
+                        rsi = calc_rsi(price_history[symbol])
+                        min_threshold = min(p["threshold"] for p in PLANS.values())
+                        if abs(change_pct) >= min_threshold:
+                            now = time.time()
+                            if now - last_signal_times.get(symbol, 0) > 300:
+                                print(f"🔔 {symbol.upper()} {change_pct:+.2f}%!")
+                                await broadcast_signal(symbol, close, change_pct, rsi)
+                                last_signal_times[symbol] = now
+                        prev_prices[symbol] = close
+        except Exception as e:
+            print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
+            await asyncio.sleep(5)
+
+# ─── DAILY NEWS (Claude API - once/day, paid only) ───────────────────────────
+
+async def send_daily_news():
+    print("📰 Sending daily market analysis...")
+    try:
+        fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
+        fg_data = fg.get("data", [{"value":"50","value_classification":"Neutral"}])[0]
+        fear_val = fg_data.get("value", "50")
+        fear_label = fg_data.get("value_classification", "Neutral")
+        btc_price = latest_prices.get("btcusdt", 0)
+        date_str = datetime.now().strftime("%B %d, %Y")
+
+        configs = {
+            "basic":    (300, "Write a SHORT 3-4 sentence daily market brief."),
+            "standard": (500, "Write a MEDIUM 5-7 sentence daily market analysis covering BTC/ETH levels, altcoin sentiment, and outlook."),
+            "premium":  (800, "Write a DETAILED analysis with sections: Market Overview, BTC & ETH Levels, Altcoin Sectors, Macro Factors, and Today's Outlook."),
+        }
+
+        for plan, (tokens, instruction) in configs.items():
+            analysis = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=tokens,
+                messages=[{"role": "user", "content": f"""
+You are a professional crypto analyst. {instruction}
+BTC: ${btc_price:,.2f} | Fear & Greed: {fear_val} ({fear_label}) | Date: {date_str}
+English only. Professional tone.
+                """}]
+            ).content[0].text
+
+            await send_to_channel(plan, f"""📰 *Daily Market Analysis — {date_str}*
+━━━━━━━━━━━━━━━━━━━━
+{analysis}
+━━━━━━━━━━━━━━━━━━━━
+😱 Fear & Greed: *{fear_val}* ({fear_label})
+💰 BTC: *${btc_price:,.2f}*
+🌐 ganoflow.com""")
+
+        print("✅ Daily news sent to all paid plans!")
     except Exception as e:
-        print(f"signal_cmd error: {e}")
+        print(f"❌ Daily news error: {e}")
+
+async def daily_news_scheduler():
+    while True:
+        now = datetime.utcnow()
+        target = 9
+        if now.hour >= target:
+            wait = (24 - now.hour + target) * 3600 - now.minute * 60 - now.second
+        else:
+            wait = (target - now.hour) * 3600 - now.minute * 60 - now.second
+        print(f"⏰ Next daily news in {wait//3600}h {(wait%3600)//60}m")
+        await asyncio.sleep(wait)
+        await send_daily_news()
+
+# ─── CHATBOT ─────────────────────────────────────────────────────────────────
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("""👋 Welcome to GanoFlow!
+
+Commands:
+/signal — Latest BTC signal
+/prices — Live prices
+/subscribe — Our plans
+/help — This menu
+
+⚠️ For reference only. Trade at your own risk.""")
+
+async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📊 Calculating...")
+    try:
+        btc = latest_prices.get("btcusdt", 0)
+        if not btc:
+            await update.message.reply_text("❌ No data yet. Try again.")
+            return
+        rsi = calc_rsi(price_history["btcusdt"])
+        pl = list(price_history["btcusdt"])
+        change_pct = ((pl[-1] - pl[-2]) / pl[-2] * 100) if len(pl) >= 2 else 0
+        up_pct, down_pct = calc_probability(rsi, change_pct)
+        direction = "LONG 📈" if change_pct >= 0 else "SHORT 📉"
+        rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
+        await update.message.reply_text(f"""📊 *BITCOIN SIGNAL — GanoFlow*
+━━━━━━━━━━━━━━━━━━━━
+💰 *{fmt(btc)}*
+📈 1m Change: *{change_pct:+.2f}%*
+━━━━━━━━━━━━━━━━━━━━
+*{direction}*
+🐂 UP *{up_pct}%* | 🐻 DOWN *{down_pct}%*
+📊 RSI *{rsi}* — {rsi_label}
+━━━━━━━━━━━━━━━━━━━━
+⚠️ DYOR. ganoflow.com""", parse_mode="Markdown")
+    except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
+async def prices_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not latest_prices:
+        await update.message.reply_text("❌ No data yet.")
+        return
+    msg = "💰 *Live Prices — GanoFlow*\n━━━━━━━━━━━━━━━━━━━━\n"
+    for symbol, name in COIN_NAMES.items():
+        price = latest_prices.get(symbol)
+        if price:
+            msg += f"*{symbol.replace('usdt','').upper()}* — {fmt(price)}\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━\n🌐 ganoflow.com"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""
-💎 *GanoFlow Plans*
+    await update.message.reply_text("""💎 *GanoFlow Plans*
 ━━━━━━━━━━━━━━━━━━━━
-🆓 *Free* — BTC + ETH signals only
-⚡ *Basic* — $29/mo — Top 10 coins
-🚀 *Standard* — $59/mo — Top 25 coins
-👑 *Premium* — $99/mo — Top 50 coins + Priority support
+🆓 *Free* — BTC + ETH, 1% alerts
+⚡ *Basic* — $29/mo — Top 5, 0.8% alerts
+🚀 *Standard* — $59/mo — Top 7, 0.5% alerts
+👑 *Premium* — $99/mo — Top 10, 0.3% alerts
 ━━━━━━━━━━━━━━━━━━━━
-✨ All plans include:
-- Live signals on 0.3%+ market moves
-- Entry, TP1/TP2/TP3 & Stop Loss
-- AI-powered LONG/SHORT signal
-- Confidence score & reasoning
-- 24/7 automated analysis
-━━━━━━━━━━━━━━━━━━━━
-🌐 Subscribe: https://ganoflow.com
-    """, parse_mode="Markdown")
+🌐 https://ganoflow.com""", parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=300,
-        messages=[{"role":"user","content":f"You are GanoFlow's customer support for an AI crypto signal service. Be helpful, professional and concise. User: {user_message}"}]
-    )
-    await update.message.reply_text(msg.content[0].text)
+    await update.message.reply_text("Use /signal, /prices, or /subscribe.")
+
+# ─── MAIN ────────────────────────────────────────────────────────────────────
 
 async def main():
-    print("🚀 GanoFlow Bot + Signal Monitor Starting...")
+    print("🚀 GanoFlow Starting...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await bot.delete_webhook(drop_pending_updates=True)
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("signal", signal_cmd))
+    app.add_handler(CommandHandler("prices", prices_cmd))
     app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    print("✅ Bot is running!")
-    await monitor()
+    print("✅ Bot running!")
+    await asyncio.gather(
+        websocket_monitor(),
+        daily_news_scheduler(),
+    )
 
 asyncio.run(main())
