@@ -29,11 +29,11 @@ CHANNELS = {
     "premium":  parse_channel(os.environ.get("TG_PREMIUM_CHANNEL", "0")),
 }
 
-PLANS = {
-    "free":     {"coins": ["btcusdt", "ethusdt"], "threshold": 1.0},
-    "basic":    {"coins": ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt"], "threshold": 0.8},
-    "standard": {"coins": ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "adausdt", "avaxusdt"], "threshold": 0.5},
-    "premium":  {"coins": ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "adausdt", "avaxusdt", "dotusdt", "linkusdt", "dogeusdt"], "threshold": 0.3},
+PLAN_COINS = {
+    "free":     ["btcusdt", "ethusdt"],
+    "basic":    ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt"],
+    "standard": ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "adausdt", "avaxusdt"],
+    "premium":  ["btcusdt", "ethusdt", "solusdt", "bnbusdt", "xrpusdt", "adausdt", "avaxusdt", "dotusdt", "linkusdt", "dogeusdt"],
 }
 
 COIN_NAMES = {
@@ -45,9 +45,8 @@ COIN_NAMES = {
 
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 price_history = {coin: deque(maxlen=50) for coin in COIN_NAMES}
-prev_prices = {}
-last_signal_times = {}
 latest_prices = {}
+live_message_ids = {}  # {plan: message_id}
 
 # ─── TECHNICAL ANALYSIS ──────────────────────────────────────────────────────
 
@@ -86,7 +85,7 @@ def calc_probability(rsi, change_pct):
 
 def calc_targets(price, change_pct):
     v = abs(change_pct) / 100
-    if change_pct > 0:
+    if change_pct >= 0:
         return (
             round(price * 0.999, 4), round(price * 1.001, 4),
             round(price * (1 + max(v*2, 0.01)), 4),
@@ -111,51 +110,116 @@ def fmt(price):
     else:
         return f"${price:.6f}"
 
-# ─── SEND ────────────────────────────────────────────────────────────────────
+def build_live_message(plan):
+    coins = PLAN_COINS.get(plan, [])
+    try:
+        fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
+        fg_val = fg.get("data", [{"value":"50"}])[0].get("value", "50")
+        fg_label = fg.get("data", [{"value_classification":"Neutral"}])[0].get("value_classification", "Neutral")
+    except:
+        fg_val = "50"
+        fg_label = "Neutral"
 
-async def send_to_channel(plan, message):
+    now = datetime.utcnow().strftime("%H:%M UTC")
+    lines = [f"🔴 *LIVE — GanoFlow* | {now}"]
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    for symbol in coins:
+        price = latest_prices.get(symbol)
+        if not price:
+            continue
+        sym = symbol.replace("usdt", "").upper()
+        rsi = calc_rsi(price_history[symbol])
+        pl = list(price_history[symbol])
+        chg = ((pl[-1] - pl[-2]) / pl[-2] * 100) if len(pl) >= 2 else 0
+        up_pct, down_pct = calc_probability(rsi, chg)
+        e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
+        arrow = "📈" if chg >= 0 else "📉"
+
+        lines.append(f"{arrow} *{sym}/USDT* {fmt(price)}  {chg:+.2f}%")
+        lines.append(f"   🐂 UP {up_pct}%  |  🐻 DOWN {down_pct}%  |  RSI {rsi}")
+        if plan != "free":
+            lines.append(f"   Entry {fmt(e_low)}–{fmt(e_high)}")
+            lines.append(f"   TP1 {fmt(tp1)}  TP2 {fmt(tp2)}  TP3 {fmt(tp3)}")
+            lines.append(f"   SL {fmt(sl)}")
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"😱 Fear & Greed: *{fg_val}* ({fg_label})")
+    lines.append("🌐 ganoflow.com")
+    return "\n".join(lines)
+
+# ─── LIVE MESSAGE MANAGER ────────────────────────────────────────────────────
+
+async def init_live_message(plan):
     channel_id = CHANNELS.get(plan, 0)
     if not channel_id or channel_id == 0:
         return
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
-        await bot.send_message(chat_id=channel_id, text=message, parse_mode="Markdown")
+        msg = await bot.send_message(
+            chat_id=channel_id,
+            text=build_live_message(plan),
+            parse_mode="Markdown"
+        )
+        live_message_ids[plan] = msg.message_id
+        # Pin it
+        try:
+            await bot.pin_chat_message(chat_id=channel_id, message_id=msg.message_id, disable_notification=True)
+        except:
+            pass
+        print(f"✅ Live message created for {plan}: {msg.message_id}")
     except Exception as e:
-        print(f"Error sending to {plan}: {e}")
+        print(f"❌ Init live message error {plan}: {e}")
 
-async def broadcast_signal(symbol, price, change_pct, rsi):
-    name = COIN_NAMES.get(symbol, symbol.upper())
-    sym = symbol.replace("usdt", "").upper()
-    direction = "LONG" if change_pct > 0 else "SHORT"
-    emoji = "📈" if change_pct > 0 else "📉"
-    up_pct, down_pct = calc_probability(rsi, change_pct)
-    e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, change_pct)
-    rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
+async def update_live_message(plan):
+    channel_id = CHANNELS.get(plan, 0)
+    if not channel_id or channel_id == 0:
+        return
+    msg_id = live_message_ids.get(plan)
+    if not msg_id:
+        await init_live_message(plan)
+        return
+    bot = Bot(token=TELEGRAM_TOKEN)
+    try:
+        await bot.edit_message_text(
+            chat_id=channel_id,
+            message_id=msg_id,
+            text=build_live_message(plan),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            print(f"❌ Edit error {plan}: {e}")
 
-    msg = f"""⚡ *LIVE SIGNAL — GanoFlow*
-━━━━━━━━━━━━━━━━━━━━
-🪙 *{sym}/USDT* — {name}
-🔔 Moved *{change_pct:+.2f}%*
-💰 *{fmt(price)}*
-━━━━━━━━━━━━━━━━━━━━
-{emoji} *{direction}*
-🐂 UP *{up_pct}%* | 🐻 DOWN *{down_pct}%*
+async def live_updater():
+    # Wait for WebSocket data
+    print("⏳ Waiting for WebSocket data...")
+    await asyncio.sleep(10)
 
-ENTRY　　{fmt(e_low)} — {fmt(e_high)}
-TP1　　　{fmt(tp1)}
-TP2　　　{fmt(tp2)}
-TP3　　　{fmt(tp3)}
-STOP　　 {fmt(sl)}
+    # Init live messages for all plans
+    for plan in PLAN_COINS:
+        await init_live_message(plan)
+        await asyncio.sleep(1)
 
-📊 RSI *{rsi}* — {rsi_label}
-━━━━━━━━━━━━━━━━━━━━
-⚠️ DYOR. Trade at your own risk.
-🌐 ganoflow.com"""
+    last_reset = time.time()
 
-    for plan, config in PLANS.items():
-        if symbol in config["coins"] and abs(change_pct) >= config["threshold"]:
-            await send_to_channel(plan, msg)
-            print(f"✅ Sent to {plan}")
+    while True:
+        await asyncio.sleep(5)  # update every 5 seconds
+
+        # Every 24 hours: create new message
+        if time.time() - last_reset > 86400:
+            print("🔄 24h reset - creating new live messages...")
+            for plan in PLAN_COINS:
+                await init_live_message(plan)
+                await asyncio.sleep(1)
+            last_reset = time.time()
+            continue
+
+        # Update existing messages
+        for plan in PLAN_COINS:
+            await update_live_message(plan)
+            await asyncio.sleep(0.5)
 
 # ─── WEBSOCKET ───────────────────────────────────────────────────────────────
 
@@ -180,25 +244,11 @@ async def websocket_monitor():
                     latest_prices[symbol] = close
                     if is_closed:
                         price_history[symbol].append(close)
-                        if symbol not in prev_prices:
-                            prev_prices[symbol] = close
-                            continue
-                        prev = prev_prices[symbol]
-                        change_pct = ((close - prev) / prev) * 100
-                        rsi = calc_rsi(price_history[symbol])
-                        min_threshold = min(p["threshold"] for p in PLANS.values())
-                        if abs(change_pct) >= min_threshold:
-                            now = time.time()
-                            if now - last_signal_times.get(symbol, 0) > 300:
-                                print(f"🔔 {symbol.upper()} {change_pct:+.2f}%!")
-                                await broadcast_signal(symbol, close, change_pct, rsi)
-                                last_signal_times[symbol] = now
-                        prev_prices[symbol] = close
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
-# ─── DAILY NEWS ──────────────────────────────────────────────────────────────
+# ─── DAILY NEWS (Claude API - once/day, paid only) ───────────────────────────
 
 async def send_daily_news():
     print("📰 Sending daily market analysis...")
@@ -217,6 +267,9 @@ async def send_daily_news():
         }
 
         for plan, (tokens, instruction) in configs.items():
+            channel_id = CHANNELS.get(plan, 0)
+            if not channel_id:
+                continue
             analysis = client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=tokens,
@@ -227,14 +280,18 @@ English only. Professional tone.
                 """}]
             ).content[0].text
 
-            await send_to_channel(plan, f"""📰 *Daily Market Analysis — {date_str}*
+            bot = Bot(token=TELEGRAM_TOKEN)
+            await bot.send_message(
+                chat_id=channel_id,
+                text=f"""📰 *Daily Market Analysis — {date_str}*
 ━━━━━━━━━━━━━━━━━━━━
 {analysis}
 ━━━━━━━━━━━━━━━━━━━━
 😱 Fear & Greed: *{fear_val}* ({fear_label})
 💰 BTC: *${btc_price:,.2f}*
-🌐 ganoflow.com""")
-
+🌐 ganoflow.com""",
+                parse_mode="Markdown"
+            )
         print("✅ Daily news sent!")
     except Exception as e:
         print(f"❌ Daily news error: {e}")
@@ -313,10 +370,10 @@ async def prices_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("""💎 *GanoFlow Plans*
 ━━━━━━━━━━━━━━━━━━━━
-🆓 *Free* — BTC + ETH, 1% alerts
-⚡ *Basic* — $29/mo — Top 5, 0.8% alerts
-🚀 *Standard* — $59/mo — Top 7, 0.5% alerts
-👑 *Premium* — $99/mo — Top 10, 0.3% alerts
+🆓 *Free* — BTC + ETH live
+⚡ *Basic* — $29/mo — Top 5 coins
+🚀 *Standard* — $59/mo — Top 7 coins
+👑 *Premium* — $99/mo — Top 10 coins
 ━━━━━━━━━━━━━━━━━━━━
 🌐 https://ganoflow.com""", parse_mode="Markdown")
 
@@ -327,8 +384,8 @@ We send real-time crypto signals straight to your Telegram —
 24/7, the moment the market moves.
 
 📊 What you get:
-— Live signals when coins move (Entry, TP1/TP2/TP3, Stop Loss)
-— 🐂 UP / 🐻 DOWN probability on every signal
+— Live price updates (Entry, TP1/TP2/TP3, Stop Loss)
+— 🐂 UP / 🐻 DOWN probability
 — Daily market analysis (paid plans)
 
 Ready to start?
@@ -358,6 +415,7 @@ async def main():
     print("✅ Bot running!")
     await asyncio.gather(
         websocket_monitor(),
+        live_updater(),
         daily_news_scheduler(),
     )
 
