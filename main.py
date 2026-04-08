@@ -254,15 +254,23 @@ async def daily_news_scheduler():
 # ─── CHATBOT ─────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""👋 Welcome to GanoFlow!
+    await update.message.reply_text("""👋 Hey! Welcome to GanoFlow.
 
-🤖 Real-time crypto signals powered by live Binance data.
+We send real-time crypto signals straight to your Telegram — 
+24/7, the moment the market moves.
 
-🌐 ganoflow.com
-💎 /subscribe — View plans
-📧 Support: Ganoflow@proton.me
+📊 What you get:
+— Live signals when coins move (Entry, TP1/TP2/TP3, Stop Loss)
+— 🐂 UP / 🐻 DOWN probability on every signal
+— Daily market analysis (paid plans)
 
-⚠️ For reference only. Trade at your own risk.""")
+Ready to start?
+👉 ganoflow.com — pick your plan
+👉 /subscribe — see plan details
+
+📧 Questions? Ganoflow@proton.me
+
+⚠️ For reference only. Not financial advice.""")
 
 async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 Calculating...")
