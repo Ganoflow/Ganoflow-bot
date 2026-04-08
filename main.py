@@ -182,10 +182,6 @@ async def init_live_message(plan):
             parse_mode="Markdown"
         )
         live_message_ids[plan] = msg.message_id
-        try:
-            await bot.pin_chat_message(chat_id=channel_id, message_id=msg.message_id, disable_notification=True)
-        except:
-            pass
         print(f"✅ Live message created for {plan}: {msg.message_id}")
     except Exception as e:
         print(f"❌ Init live message error {plan}: {e}")
@@ -288,7 +284,7 @@ English only. Professional tone.
             ).content[0].text
 
             bot = Bot(token=TELEGRAM_TOKEN)
-            await bot.send_message(
+            news_msg = await bot.send_message(
                 chat_id=channel_id,
                 text=f"""📰 *Daily Market Analysis — {date_str}*
 ━━━━━━━━━━━━━━━━━━━━
@@ -299,19 +295,47 @@ English only. Professional tone.
 🌐 ganoflow.com""",
                 parse_mode="Markdown"
             )
+            # Pin the daily news
+            try:
+                await bot.pin_chat_message(chat_id=channel_id, message_id=news_msg.message_id, disable_notification=True)
+            except:
+                pass
         print("✅ Daily news sent!")
+
+        # After news → create new live messages (not pinned, news stays pinned)
+        print("🔄 Creating new live messages after daily news...")
+        await asyncio.sleep(2)
+        for plan in PLAN_COINS:
+            channel_id = CHANNELS.get(plan, 0)
+            if not channel_id:
+                continue
+            bot2 = Bot(token=TELEGRAM_TOKEN)
+            try:
+                msg = await bot2.send_message(
+                    chat_id=channel_id,
+                    text=build_live_message(plan),
+                    parse_mode="Markdown"
+                )
+                live_message_ids[plan] = msg.message_id
+                print(f"✅ New live message for {plan}: {msg.message_id}")
+            except Exception as e2:
+                print(f"❌ Live message error {plan}: {e2}")
+            await asyncio.sleep(1)
     except Exception as e:
         print(f"❌ Daily news error: {e}")
 
 async def daily_news_scheduler():
     while True:
         now = datetime.utcnow()
-        target = 9
-        if now.hour >= target:
-            wait = (24 - now.hour + target) * 3600 - now.minute * 60 - now.second
+        # NY 09:30 = UTC 13:30
+        target_h, target_m = 13, 30
+        target_secs = target_h * 3600 + target_m * 60
+        current_secs = now.hour * 3600 + now.minute * 60 + now.second
+        if current_secs >= target_secs:
+            wait = 86400 - (current_secs - target_secs)
         else:
-            wait = (target - now.hour) * 3600 - now.minute * 60 - now.second
-        print(f"⏰ Next daily news in {wait//3600}h {(wait%3600)//60}m")
+            wait = target_secs - current_secs
+        print(f"⏰ Next daily news in {wait//3600}h {(wait%3600)//60}m (NY 09:30)")
         await asyncio.sleep(wait)
         await send_daily_news()
 
