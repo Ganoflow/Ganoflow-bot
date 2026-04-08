@@ -49,7 +49,7 @@ prev_prices = {}
 last_signal_times = {}
 latest_prices = {}
 
-# ─── TECHNICAL ANALYSIS (zero API cost) ─────────────────────────────────────
+# ─── TECHNICAL ANALYSIS ──────────────────────────────────────────────────────
 
 def calc_rsi(prices, period=14):
     if len(prices) < period + 1:
@@ -130,13 +130,7 @@ async def broadcast_signal(symbol, price, change_pct, rsi):
     emoji = "📈" if change_pct > 0 else "📉"
     up_pct, down_pct = calc_probability(rsi, change_pct)
     e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, change_pct)
-
-    if rsi < 30:
-        rsi_label = "Oversold 🟢"
-    elif rsi > 70:
-        rsi_label = "Overbought 🔴"
-    else:
-        rsi_label = "Neutral ⚪"
+    rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
 
     msg = f"""⚡ *LIVE SIGNAL — GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
@@ -204,7 +198,7 @@ async def websocket_monitor():
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
-# ─── DAILY NEWS (Claude API - once/day, paid only) ───────────────────────────
+# ─── DAILY NEWS ──────────────────────────────────────────────────────────────
 
 async def send_daily_news():
     print("📰 Sending daily market analysis...")
@@ -241,7 +235,7 @@ English only. Professional tone.
 💰 BTC: *${btc_price:,.2f}*
 🌐 ganoflow.com""")
 
-        print("✅ Daily news sent to all paid plans!")
+        print("✅ Daily news sent!")
     except Exception as e:
         print(f"❌ Daily news error: {e}")
 
@@ -262,11 +256,11 @@ async def daily_news_scheduler():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("""👋 Welcome to GanoFlow!
 
-Commands:
-/signal — Latest BTC signal
-/prices — Live prices
-/subscribe — Our plans
-/help — This menu
+🤖 Real-time crypto signals powered by live Binance data.
+
+🌐 ganoflow.com
+💎 /subscribe — View plans
+📧 Support: Ganoflow@proton.me
 
 ⚠️ For reference only. Trade at your own risk.""")
 
@@ -275,7 +269,7 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         btc = latest_prices.get("btcusdt", 0)
         if not btc:
-            await update.message.reply_text("❌ No data yet. Try again.")
+            await update.message.reply_text("❌ No data yet. Try again in a moment.")
             return
         rsi = calc_rsi(price_history["btcusdt"])
         pl = list(price_history["btcusdt"])
@@ -298,7 +292,7 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def prices_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not latest_prices:
-        await update.message.reply_text("❌ No data yet.")
+        await update.message.reply_text("❌ No data yet. Try again in a moment.")
         return
     msg = "💰 *Live Prices — GanoFlow*\n━━━━━━━━━━━━━━━━━━━━\n"
     for symbol, name in COIN_NAMES.items():
@@ -319,7 +313,9 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🌐 https://ganoflow.com""", parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Use /signal, /prices, or /subscribe.")
+    await update.message.reply_text("""🌐 ganoflow.com
+💎 /subscribe — View plans
+📧 Support: Ganoflow@proton.me""")
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
