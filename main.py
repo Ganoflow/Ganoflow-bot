@@ -161,7 +161,7 @@ STOP　　 {fmt(sl)}
 
 async def websocket_monitor():
     streams = "/".join([f"{coin}@kline_1m" for coin in COIN_NAMES])
-    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+    url = f"wss://data-stream.binance.vision/stream?streams={streams}"
     print("🔌 Connecting to Binance WebSocket...")
     while True:
         try:
