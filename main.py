@@ -321,9 +321,23 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🌐 https://ganoflow.com""", parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""🌐 ganoflow.com
-💎 /subscribe — View plans
-📧 Support: Ganoflow@proton.me""")
+    await update.message.reply_text("""👋 Hey! Welcome to GanoFlow.
+
+We send real-time crypto signals straight to your Telegram — 
+24/7, the moment the market moves.
+
+📊 What you get:
+— Live signals when coins move (Entry, TP1/TP2/TP3, Stop Loss)
+— 🐂 UP / 🐻 DOWN probability on every signal
+— Daily market analysis (paid plans)
+
+Ready to start?
+👉 ganoflow.com — pick your plan
+👉 /subscribe — see plan details
+
+📧 Questions? Ganoflow@proton.me
+
+⚠️ For reference only. Not financial advice.""")
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
