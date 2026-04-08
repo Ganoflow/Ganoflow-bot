@@ -44,19 +44,19 @@ COIN_NAMES = {
 }
 
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-price_history = {coin: deque(maxlen=50) for coin in COIN_NAMES}
+price_history = {coin: deque(maxlen=100) for coin in COIN_NAMES}
 latest_prices = {}
-live_message_ids = {}  # {plan: message_id}
+live_message_ids = {}
 
 # ─── TECHNICAL ANALYSIS ──────────────────────────────────────────────────────
 
 def calc_rsi(prices, period=14):
-    if len(prices) < period + 1:
+    pl = list(prices)
+    if len(pl) < period + 1:
         return 50.0
     gains, losses = [], []
-    prices_list = list(prices)
-    for i in range(1, len(prices_list)):
-        diff = prices_list[i] - prices_list[i-1]
+    for i in range(1, len(pl)):
+        diff = pl[i] - pl[i-1]
         gains.append(max(diff, 0))
         losses.append(max(-diff, 0))
     if len(gains) < period:
@@ -70,18 +70,21 @@ def calc_rsi(prices, period=14):
 
 def calc_probability(rsi, change_pct):
     if rsi < 30:
-        up_base = 70
+        up_base = 70.0
     elif rsi < 45:
-        up_base = 60
+        up_base = 60.0
     elif rsi > 70:
-        up_base = 30
+        up_base = 30.0
     elif rsi > 55:
-        up_base = 45
+        up_base = 45.0
     else:
-        up_base = 50
-    up_base += min(max(change_pct * 3, -15), 15)
-    up_pct = max(20, min(80, round(up_base)))
-    return up_pct, 100 - up_pct
+        up_base = 50.0
+    up_base += min(max(change_pct * 2.5, -15), 15)
+    # Add RSI fine-tune
+    up_base += (50 - rsi) * 0.1
+    up_pct = round(max(20.0, min(80.0, up_base)), 2)
+    down_pct = round(100 - up_pct, 2)
+    return up_pct, down_pct
 
 def calc_targets(price, change_pct):
     v = abs(change_pct) / 100
@@ -120,8 +123,8 @@ def build_live_message(plan):
         fg_val = "50"
         fg_label = "Neutral"
 
-    now = datetime.utcnow().strftime("%H:%M UTC")
-    lines = [f"🔴 *LIVE — GanoFlow* | {now}"]
+    date_str = datetime.utcnow().strftime("%m/%d/%Y")
+    lines = [f"⚡ *LIVE — GanoFlow* | {date_str}"]
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
     for symbol in coins:
@@ -129,22 +132,37 @@ def build_live_message(plan):
         if not price:
             continue
         sym = symbol.replace("usdt", "").upper()
-        rsi = calc_rsi(price_history[symbol])
         pl = list(price_history[symbol])
-        chg = ((pl[-1] - pl[-2]) / pl[-2] * 100) if len(pl) >= 2 else 0
+        rsi = calc_rsi(price_history[symbol]) if len(pl) >= 15 else 50.0
+        chg = ((pl[-1] - pl[0]) / pl[0] * 100) if len(pl) >= 2 else 0
         up_pct, down_pct = calc_probability(rsi, chg)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
-        arrow = "📈" if chg >= 0 else "📉"
+        direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
+        bull_icon = "🐂" if up_pct >= down_pct else "🐻"
+        rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
 
-        lines.append(f"{arrow} *{sym}/USDT* {fmt(price)}  {chg:+.2f}%")
-        lines.append(f"   🐂 UP {up_pct}%  |  🐻 DOWN {down_pct}%  |  RSI {rsi}")
+        # Whale activity
+        if abs(chg) > 0.5:
+            whale = "🐋 Heavy accumulation" if chg > 0 else "🐋 Heavy selling"
+        elif abs(chg) > 0.2:
+            whale = "🐋 Moderate whale activity"
+        else:
+            whale = "🐋 Low whale activity"
+
+        lines.append(f"{bull_icon} *{sym}/USDT*")
+        lines.append(f"PRICE　　　*{fmt(price)}*")
+        lines.append(f"MOVE　　　*{chg:+.2f}%* ⚡")
+        lines.append(f"DIRECTION　*{direction}*")
+        lines.append(f"🐂 UP　　　*{up_pct:.2f}%*")
+        lines.append(f"🐻 DOWN　*{down_pct:.2f}%*")
         if plan != "free":
-            lines.append(f"   Entry {fmt(e_low)}–{fmt(e_high)}")
-            lines.append(f"   TP1 {fmt(tp1)}  TP2 {fmt(tp2)}  TP3 {fmt(tp3)}")
-            lines.append(f"   SL {fmt(sl)}")
-        lines.append("")
+            lines.append(f"ENTRY　　　*{fmt(e_low)} — {fmt(e_high)}*")
+            lines.append(f"TP1/TP2/TP3　*{fmt(tp1)} / {fmt(tp2)} / {fmt(tp3)}*")
+            lines.append(f"STOP LOSS　*{fmt(sl)}*")
+            lines.append(f"{whale}")
+        lines.append(f"RSI　　　　*{rsi}* — {rsi_label}")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
 
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"😱 Fear & Greed: *{fg_val}* ({fg_label})")
     lines.append("🌐 ganoflow.com")
     return "\n".join(lines)
@@ -154,6 +172,7 @@ def build_live_message(plan):
 async def init_live_message(plan):
     channel_id = CHANNELS.get(plan, 0)
     if not channel_id or channel_id == 0:
+        print(f"⚠️ No channel ID for {plan}, skipping")
         return
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
@@ -163,7 +182,6 @@ async def init_live_message(plan):
             parse_mode="Markdown"
         )
         live_message_ids[plan] = msg.message_id
-        # Pin it
         try:
             await bot.pin_chat_message(chat_id=channel_id, message_id=msg.message_id, disable_notification=True)
         except:
@@ -193,30 +211,21 @@ async def update_live_message(plan):
             print(f"❌ Edit error {plan}: {e}")
 
 async def live_updater():
-    # Wait for WebSocket data
     print("⏳ Waiting for WebSocket data...")
-    await asyncio.sleep(10)
-
-    # Init live messages for all plans
+    await asyncio.sleep(15)
     for plan in PLAN_COINS:
         await init_live_message(plan)
         await asyncio.sleep(1)
-
     last_reset = time.time()
-
     while True:
-        await asyncio.sleep(5)  # update every 5 seconds
-
-        # Every 24 hours: create new message
+        await asyncio.sleep(5)
         if time.time() - last_reset > 86400:
-            print("🔄 24h reset - creating new live messages...")
+            print("🔄 24h reset - new live messages...")
             for plan in PLAN_COINS:
                 await init_live_message(plan)
                 await asyncio.sleep(1)
             last_reset = time.time()
             continue
-
-        # Update existing messages
         for plan in PLAN_COINS:
             await update_live_message(plan)
             await asyncio.sleep(0.5)
@@ -238,17 +247,15 @@ async def websocket_monitor():
                         continue
                     symbol = kline.get("s", "").lower()
                     close = float(kline.get("c", 0))
-                    is_closed = kline.get("x", False)
                     if not close or symbol not in COIN_NAMES:
                         continue
                     latest_prices[symbol] = close
-                    if is_closed:
-                        price_history[symbol].append(close)
+                    price_history[symbol].append(close)
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
-# ─── DAILY NEWS (Claude API - once/day, paid only) ───────────────────────────
+# ─── DAILY NEWS ──────────────────────────────────────────────────────────────
 
 async def send_daily_news():
     print("📰 Sending daily market analysis...")
@@ -317,8 +324,9 @@ We send real-time crypto signals straight to your Telegram —
 24/7, the moment the market moves.
 
 📊 What you get:
-— Live signals when coins move (Entry, TP1/TP2/TP3, Stop Loss)
-— 🐂 UP / 🐻 DOWN probability on every signal
+— Live prices with Entry, TP1/TP2/TP3, Stop Loss
+— 🐂 UP / 🐻 DOWN probability on every coin
+— 🐋 Whale activity tracking
 — Daily market analysis (paid plans)
 
 Ready to start?
@@ -336,16 +344,16 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not btc:
             await update.message.reply_text("❌ No data yet. Try again in a moment.")
             return
-        rsi = calc_rsi(price_history["btcusdt"])
         pl = list(price_history["btcusdt"])
-        change_pct = ((pl[-1] - pl[-2]) / pl[-2] * 100) if len(pl) >= 2 else 0
+        rsi = calc_rsi(price_history["btcusdt"])
+        change_pct = ((pl[-1] - pl[0]) / pl[0] * 100) if len(pl) >= 2 else 0
         up_pct, down_pct = calc_probability(rsi, change_pct)
         direction = "LONG 📈" if change_pct >= 0 else "SHORT 📉"
         rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
         await update.message.reply_text(f"""📊 *BITCOIN SIGNAL — GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
 💰 *{fmt(btc)}*
-📈 1m Change: *{change_pct:+.2f}%*
+📈 Change: *{change_pct:+.2f}%*
 ━━━━━━━━━━━━━━━━━━━━
 *{direction}*
 🐂 UP *{up_pct}%* | 🐻 DOWN *{down_pct}%*
@@ -360,7 +368,7 @@ async def prices_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No data yet. Try again in a moment.")
         return
     msg = "💰 *Live Prices — GanoFlow*\n━━━━━━━━━━━━━━━━━━━━\n"
-    for symbol, name in COIN_NAMES.items():
+    for symbol in COIN_NAMES:
         price = latest_prices.get(symbol)
         if price:
             msg += f"*{symbol.replace('usdt','').upper()}* — {fmt(price)}\n"
@@ -384,8 +392,9 @@ We send real-time crypto signals straight to your Telegram —
 24/7, the moment the market moves.
 
 📊 What you get:
-— Live price updates (Entry, TP1/TP2/TP3, Stop Loss)
-— 🐂 UP / 🐻 DOWN probability
+— Live prices with Entry, TP1/TP2/TP3, Stop Loss
+— 🐂 UP / 🐻 DOWN probability on every coin
+— 🐋 Whale activity tracking
 — Daily market analysis (paid plans)
 
 Ready to start?
