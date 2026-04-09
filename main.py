@@ -135,7 +135,8 @@ def build_live_message(plan):
         pl = list(price_history[symbol])
         rsi = calc_rsi(price_history[symbol]) if len(pl) >= 15 else 50.0
         # 최근 10개 데이터 기준으로 변동 계산 (너무 오래된 거 말고)
-        window = pl[-10:] if len(pl) >= 10 else pl
+        # MOVE: 최근 5개 1분봉 기준 변동률
+        window = pl[-5:] if len(pl) >= 5 else pl
         chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
         up_pct, down_pct = calc_probability(rsi, chg)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
@@ -239,25 +240,39 @@ async def live_updater():
 # ─── WEBSOCKET ───────────────────────────────────────────────────────────────
 
 async def websocket_monitor():
-    # @trade 스트림으로 틱 단위 실시간 데이터
-    streams = "/".join([f"{coin}@aggTrade" for coin in COIN_NAMES])
+    # aggTrade로 실시간 가격 + kline_1m으로 1분봉 history 쌓기
+    trade_streams = "/".join([f"{coin}@aggTrade" for coin in COIN_NAMES])
+    kline_streams = "/".join([f"{coin}@kline_1m" for coin in COIN_NAMES])
+    streams = trade_streams + "/" + kline_streams
     url = f"wss://data-stream.binance.vision/stream?streams={streams}"
-    print("🔌 Connecting to Binance WebSocket (tick data)...")
+    print("🔌 Connecting to Binance WebSocket...")
     while True:
         try:
             async with websockets.connect(url, ping_interval=20) as ws:
                 print("✅ WebSocket connected!")
                 async for raw in ws:
                     data = json.loads(raw)
-                    trade = data.get("data", {})
-                    if not trade:
+                    stream = data.get("stream", "")
+                    d = data.get("data", {})
+                    if not d:
                         continue
-                    symbol = trade.get("s", "").lower()
-                    price = float(trade.get("p", 0))
-                    if not price or symbol not in COIN_NAMES:
-                        continue
-                    latest_prices[symbol] = price
-                    price_history[symbol].append(price)
+
+                    if "aggTrade" in stream:
+                        # 실시간 가격만 업데이트
+                        symbol = d.get("s", "").lower()
+                        price = float(d.get("p", 0))
+                        if price and symbol in COIN_NAMES:
+                            latest_prices[symbol] = price
+
+                    elif "kline" in stream:
+                        # 1분봉 닫힐때만 history에 추가
+                        kline = d.get("k", {})
+                        symbol = kline.get("s", "").lower()
+                        close = float(kline.get("c", 0))
+                        is_closed = kline.get("x", False)
+                        if close and symbol in COIN_NAMES and is_closed:
+                            price_history[symbol].append(close)
+
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
