@@ -134,7 +134,9 @@ def build_live_message(plan):
         sym = symbol.replace("usdt", "").upper()
         pl = list(price_history[symbol])
         rsi = calc_rsi(price_history[symbol]) if len(pl) >= 15 else 50.0
-        chg = ((pl[-1] - pl[0]) / pl[0] * 100) if len(pl) >= 2 else 0
+        # 최근 10개 데이터 기준으로 변동 계산 (너무 오래된 거 말고)
+        window = pl[-10:] if len(pl) >= 10 else pl
+        chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
         up_pct, down_pct = calc_probability(rsi, chg)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
         direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
