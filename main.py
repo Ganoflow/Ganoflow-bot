@@ -239,24 +239,25 @@ async def live_updater():
 # ─── WEBSOCKET ───────────────────────────────────────────────────────────────
 
 async def websocket_monitor():
-    streams = "/".join([f"{coin}@kline_1m" for coin in COIN_NAMES])
+    # @trade 스트림으로 틱 단위 실시간 데이터
+    streams = "/".join([f"{coin}@aggTrade" for coin in COIN_NAMES])
     url = f"wss://data-stream.binance.vision/stream?streams={streams}"
-    print("🔌 Connecting to Binance WebSocket...")
+    print("🔌 Connecting to Binance WebSocket (tick data)...")
     while True:
         try:
             async with websockets.connect(url, ping_interval=20) as ws:
                 print("✅ WebSocket connected!")
                 async for raw in ws:
                     data = json.loads(raw)
-                    kline = data.get("data", {}).get("k", {})
-                    if not kline:
+                    trade = data.get("data", {})
+                    if not trade:
                         continue
-                    symbol = kline.get("s", "").lower()
-                    close = float(kline.get("c", 0))
-                    if not close or symbol not in COIN_NAMES:
+                    symbol = trade.get("s", "").lower()
+                    price = float(trade.get("p", 0))
+                    if not price or symbol not in COIN_NAMES:
                         continue
-                    latest_prices[symbol] = close
-                    price_history[symbol].append(close)
+                    latest_prices[symbol] = price
+                    price_history[symbol].append(price)
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
