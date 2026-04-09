@@ -203,7 +203,15 @@ async def update_live_message(plan):
             parse_mode="Markdown"
         )
     except Exception as e:
-        if "message is not modified" not in str(e):
+        err = str(e)
+        if "message is not modified" in err:
+            pass
+        elif "Message to edit not found" in err or "message not found" in err.lower():
+            # 메시지 삭제됐으면 새로 생성
+            print(f"🔄 Message deleted for {plan}, creating new one...")
+            live_message_ids.pop(plan, None)
+            await init_live_message(plan)
+        else:
             print(f"❌ Edit error {plan}: {e}")
 
 async def live_updater():
