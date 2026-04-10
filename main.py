@@ -47,6 +47,7 @@ client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 price_history = {coin: deque(maxlen=100) for coin in COIN_NAMES}
 latest_prices = {}
 live_message_ids = {}
+summary_message_ids = {}
 fg_cache = {"value": "50", "label": "Neutral", "last_update": 0}
 
 # ─── TECHNICAL ANALYSIS ──────────────────────────────────────────────────────
@@ -254,7 +255,71 @@ def build_live_message(plan):
     lines.append("🌐 ganoflow.com")
     return "\n".join(lines)
 
+def build_summary_message(plan):
+    coins = PLAN_COINS.get(plan, [])
+    date_str = datetime.utcnow().strftime("%m/%d/%Y")
+    lines = [f"📊 *GanoFlow* | {date_str}"]
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    for symbol in coins:
+        price = latest_prices.get(symbol)
+        if not price:
+            continue
+        sym = symbol.replace("usdt", "").upper()
+        pl = list(price_history[symbol])
+        rsi = calc_rsi(price_history[symbol]) if len(pl) >= 5 else 50.0
+        window = pl[-5:] if len(pl) >= 5 else (pl if len(pl) >= 2 else pl)
+        candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
+        tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
+        fg_val, _ = get_fg()
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val)
+        icon = "🐂" if up_pct >= down_pct else "🐻"
+        lines.append(f"{icon} *{sym}* — 🐂{up_pct:.1f}% 🐻{down_pct:.1f}%")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🌐 ganoflow.com")
+    return "
+".join(lines)
+
 # ─── LIVE MESSAGE MANAGER ────────────────────────────────────────────────────
+
+async def init_summary_message(plan):
+    channel_id = CHANNELS.get(plan, 0)
+    if not channel_id or channel_id == 0:
+        return
+    bot = Bot(token=TELEGRAM_TOKEN)
+    try:
+        msg = await bot.send_message(
+            chat_id=channel_id,
+            text=build_summary_message(plan),
+            parse_mode="Markdown"
+        )
+        summary_message_ids[plan] = msg.message_id
+        print(f"✅ Summary message created for {plan}: {msg.message_id}")
+    except Exception as e:
+        print(f"❌ Init summary error {plan}: {e}")
+
+async def update_summary_message(plan):
+    channel_id = CHANNELS.get(plan, 0)
+    if not channel_id or channel_id == 0:
+        return
+    msg_id = summary_message_ids.get(plan)
+    if not msg_id:
+        await init_summary_message(plan)
+        return
+    bot = Bot(token=TELEGRAM_TOKEN)
+    try:
+        await bot.edit_message_text(
+            chat_id=channel_id,
+            message_id=msg_id,
+            text=build_summary_message(plan),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        err = str(e)
+        if "message is not modified" in err:
+            pass
+        elif "Message to edit not found" in err or "message not found" in err.lower():
+            summary_message_ids.pop(plan, None)
+            await init_summary_message(plan)
 
 async def init_live_message(plan):
     channel_id = CHANNELS.get(plan, 0)
@@ -304,6 +369,8 @@ async def live_updater():
     print("⏳ Waiting for WebSocket data...")
     await asyncio.sleep(15)
     for plan in PLAN_COINS:
+        await init_summary_message(plan)
+        await asyncio.sleep(0.5)
         await init_live_message(plan)
         await asyncio.sleep(1)
     last_reset = time.time()
@@ -312,11 +379,15 @@ async def live_updater():
         if time.time() - last_reset > 86400:
             print("🔄 24h reset - new live messages...")
             for plan in PLAN_COINS:
+                await init_summary_message(plan)
+                await asyncio.sleep(0.5)
                 await init_live_message(plan)
                 await asyncio.sleep(1)
             last_reset = time.time()
             continue
         for plan in PLAN_COINS:
+            await update_summary_message(plan)
+            await asyncio.sleep(0.3)
             await update_live_message(plan)
             await asyncio.sleep(0.5)
 
