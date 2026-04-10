@@ -68,17 +68,112 @@ def calc_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 1)
 
-def calc_probability(rsi, change_pct):
-    # RSI base
-    rsi_component = (100 - rsi) / 100 * 60 + 20  # maps RSI 0-100 → UP% 80-20
-    
-    # Price momentum - stronger weight on recent move
-    momentum = change_pct * 8  # more sensitive multiplier
-    momentum = max(-25, min(25, momentum))
-    
-    # Combine
-    up_pct = round(max(20.0, min(80.0, rsi_component + momentum)), 2)
-    down_pct = round(100 - up_pct, 2)
+def calc_ema(prices, period):
+    """Exponential Moving Average"""
+    pl = list(prices)
+    if len(pl) < period:
+        return pl[-1] if pl else 0
+    k = 2 / (period + 1)
+    ema = pl[0]
+    for p in pl[1:]:
+        ema = p * k + ema * (1 - k)
+    return ema
+
+def calc_macd(prices):
+    """MACD = EMA12 - EMA26, positive = bullish"""
+    pl = list(prices)
+    if len(pl) < 26:
+        return 0
+    ema12 = calc_ema(pl, 12)
+    ema26 = calc_ema(pl, 26)
+    return ema12 - ema26
+
+def calc_momentum(prices, period=10):
+    """Price momentum = current vs N candles ago"""
+    pl = list(prices)
+    if len(pl) < period:
+        return 0
+    return ((pl[-1] - pl[-period]) / pl[-period]) * 100
+
+def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50):
+    """
+    All factors combined:
+    1. Live tick momentum (primary - changes every second)
+    2. 5-candle price trend
+    3. RSI bias
+    4. MACD trend direction
+    5. Price momentum (10-candle)
+    6. Fear & Greed index
+    7. Trend consistency (are candles all going same way?)
+    8. Volatility amplifier
+    """
+    up_base = 50.0
+
+    # 1. Tick momentum - most sensitive
+    tick_impact = tick_chg * 15
+    tick_impact = max(-20, min(20, tick_impact))
+    up_base += tick_impact
+
+    # 2. Candle trend
+    candle_impact = candle_chg * 6
+    candle_impact = max(-15, min(15, candle_impact))
+    up_base += candle_impact
+
+    # 3. RSI bias
+    if rsi < 30:
+        up_base += 10
+    elif rsi < 40:
+        up_base += 5
+    elif rsi > 70:
+        up_base -= 10
+    elif rsi > 60:
+        up_base -= 5
+
+    if prices is not None:
+        pl = list(prices)
+
+        # 4. MACD direction
+        macd = calc_macd(pl)
+        if macd > 0:
+            up_base += min(macd * 100, 5)   # bullish MACD
+        else:
+            up_base += max(macd * 100, -5)  # bearish MACD
+
+        # 5. Price momentum (10-candle)
+        mom = calc_momentum(pl, 10)
+        mom_impact = mom * 2
+        up_base += max(-8, min(8, mom_impact))
+
+        # 6. Trend consistency - count bullish vs bearish candles in last 5
+        if len(pl) >= 5:
+            last5 = pl[-5:]
+            bull_candles = sum(1 for i in range(1, len(last5)) if last5[i] > last5[i-1])
+            bear_candles = 4 - bull_candles
+            consistency = (bull_candles - bear_candles) * 2  # -8 to +8
+            up_base += consistency
+
+    # 7. Fear & Greed bias
+    fg = float(fear_greed)
+    if fg < 25:      # extreme fear = oversold = bullish
+        up_base += 5
+    elif fg < 40:
+        up_base += 2
+    elif fg > 75:    # extreme greed = overbought = bearish
+        up_base -= 5
+    elif fg > 60:
+        up_base -= 2
+
+    # 8. Volatility amplifier
+    total_move = abs(tick_chg) + abs(candle_chg)
+    if total_move > 1.0:
+        amplifier = min(total_move * 2, 8)
+        if up_base > 50:
+            up_base += amplifier
+        else:
+            up_base -= amplifier
+
+    up_pct = round(max(20.0, min(80.0, up_base)), 3)
+    down_pct = round(100 - up_pct, 3)
     return up_pct, down_pct
 
 def calc_targets(price, change_pct):
@@ -129,17 +224,23 @@ def build_live_message(plan):
         sym = symbol.replace("usdt", "").upper()
         pl = list(price_history[symbol])
         rsi = calc_rsi(price_history[symbol]) if len(pl) >= 15 else 50.0
-        # 최근 10개 데이터 기준으로 변동 계산 (너무 오래된 거 말고)
-        # MOVE: 최근 5개 1분봉 기준 변동률
+
+        # 5-candle move
         window = pl[-5:] if len(pl) >= 5 else pl
-        chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
-        up_pct, down_pct = calc_probability(rsi, chg)
+        candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
+
+        # Live tick vs last closed candle
+        tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
+
+        # Display MOVE = combined
+        chg = candle_chg + tick_chg
+
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
         direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
         bull_icon = "🐂" if up_pct >= down_pct else "🐻"
         rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
 
-        # Whale activity
         if abs(chg) > 0.5:
             whale = "🐋 Heavy accumulation" if chg > 0 else "🐋 Heavy selling"
         elif abs(chg) > 0.2:
@@ -151,8 +252,8 @@ def build_live_message(plan):
         lines.append(f"PRICE　　　*{fmt(price)}*")
         lines.append(f"MOVE　　　*{chg:+.2f}%* ⚡")
         lines.append(f"DIRECTION　*{direction}*")
-        lines.append(f"🐂 UP　　　*{up_pct:.2f}%*")
-        lines.append(f"🐻 DOWN　*{down_pct:.2f}%*")
+        lines.append(f"🐂 UP　　　*{up_pct:.3f}%*")
+        lines.append(f"🐻 DOWN　*{down_pct:.3f}%*")
         if plan != "free":
             lines.append(f"ENTRY　　　*{fmt(e_low)} — {fmt(e_high)}*")
             lines.append(f"TP1/TP2/TP3　*{fmt(tp1)} / {fmt(tp2)} / {fmt(tp3)}*")
@@ -205,7 +306,6 @@ async def update_live_message(plan):
         if "message is not modified" in err:
             pass
         elif "Message to edit not found" in err or "message not found" in err.lower():
-            # 메시지 삭제됐으면 새로 생성
             print(f"🔄 Message deleted for {plan}, creating new one...")
             live_message_ids.pop(plan, None)
             await init_live_message(plan)
@@ -235,7 +335,6 @@ async def live_updater():
 # ─── WEBSOCKET ───────────────────────────────────────────────────────────────
 
 async def websocket_monitor():
-    # aggTrade로 실시간 가격 + kline_1m으로 1분봉 history 쌓기
     trade_streams = "/".join([f"{coin}@aggTrade" for coin in COIN_NAMES])
     kline_streams = "/".join([f"{coin}@kline_1m" for coin in COIN_NAMES])
     streams = trade_streams + "/" + kline_streams
@@ -251,23 +350,18 @@ async def websocket_monitor():
                     d = data.get("data", {})
                     if not d:
                         continue
-
                     if "aggTrade" in stream:
-                        # 실시간 가격만 업데이트
                         symbol = d.get("s", "").lower()
                         price = float(d.get("p", 0))
                         if price and symbol in COIN_NAMES:
                             latest_prices[symbol] = price
-
                     elif "kline" in stream:
-                        # 1분봉 닫힐때만 history에 추가
                         kline = d.get("k", {})
                         symbol = kline.get("s", "").lower()
                         close = float(kline.get("c", 0))
                         is_closed = kline.get("x", False)
                         if close and symbol in COIN_NAMES and is_closed:
                             price_history[symbol].append(close)
-
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
@@ -320,15 +414,12 @@ English only. Professional tone.
                     parse_mode="Markdown"
                 )
                 print(f"✅ News sent to {plan}")
-
-                # Pin the daily news
                 try:
                     await bot.pin_chat_message(chat_id=channel_id, message_id=news_msg.message_id, disable_notification=True)
                     print(f"📌 News pinned for {plan}")
                 except Exception as pin_err:
                     print(f"⚠️ Could not pin for {plan}: {pin_err}")
 
-                # Right after news → send new live message for this plan
                 await asyncio.sleep(2)
                 try:
                     live_msg = await bot.send_message(
@@ -343,18 +434,15 @@ English only. Professional tone.
 
             except Exception as plan_err:
                 print(f"❌ Error processing {plan}: {plan_err}")
-
             await asyncio.sleep(1)
 
         print("✅ Daily news + live messages done!")
-
     except Exception as e:
         print(f"❌ Daily news error: {e}")
 
 async def daily_news_scheduler():
     while True:
         now = datetime.utcnow()
-        # NY 09:30 = UTC 13:30
         target_h, target_m = 13, 30
         target_secs = target_h * 3600 + target_m * 60
         current_secs = now.hour * 3600 + now.minute * 60 + now.second
@@ -397,14 +485,17 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         pl = list(price_history["btcusdt"])
         rsi = calc_rsi(price_history["btcusdt"])
-        change_pct = ((pl[-1] - pl[0]) / pl[0] * 100) if len(pl) >= 2 else 0
-        up_pct, down_pct = calc_probability(rsi, change_pct)
-        direction = "LONG 📈" if change_pct >= 0 else "SHORT 📉"
+        window = pl[-5:] if len(pl) >= 5 else pl
+        candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
+        tick_chg = ((btc - window[-1]) / window[-1] * 100) if window and window[-1] else 0
+        chg = candle_chg + tick_chg
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val)
+        direction = "LONG 📈" if chg >= 0 else "SHORT 📉"
         rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
         await update.message.reply_text(f"""📊 *BITCOIN SIGNAL — GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
 💰 *{fmt(btc)}*
-📈 Change: *{change_pct:+.2f}%*
+📈 Change: *{chg:+.2f}%*
 ━━━━━━━━━━━━━━━━━━━━
 *{direction}*
 🐂 UP *{up_pct}%* | 🐻 DOWN *{down_pct}%*
