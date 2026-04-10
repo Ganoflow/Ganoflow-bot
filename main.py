@@ -273,7 +273,7 @@ def build_summary_message(plan):
         fg_val, _ = get_fg()
         up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val)
         icon = "🐂" if up_pct >= down_pct else "🐻"
-        lines.append(f"{icon} *{sym}* — 🐂{up_pct:.1f}% 🐻{down_pct:.1f}%")
+        lines.append(f"{icon} *{sym}* — 🐂{up_pct:.3f}% 🐻{down_pct:.3f}%")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("🌐 ganoflow.com")
     return "\n".join(lines)
@@ -368,9 +368,9 @@ async def live_updater():
     print("⏳ Waiting for WebSocket data...")
     await asyncio.sleep(15)
     for plan in PLAN_COINS:
-        await init_summary_message(plan)
-        await asyncio.sleep(0.5)
         await init_live_message(plan)
+        await asyncio.sleep(0.5)
+        await init_summary_message(plan)
         await asyncio.sleep(1)
     last_reset = time.time()
     while True:
@@ -378,16 +378,16 @@ async def live_updater():
         if time.time() - last_reset > 86400:
             print("🔄 24h reset - new live messages...")
             for plan in PLAN_COINS:
-                await init_summary_message(plan)
-                await asyncio.sleep(0.5)
                 await init_live_message(plan)
+                await asyncio.sleep(0.5)
+                await init_summary_message(plan)
                 await asyncio.sleep(1)
             last_reset = time.time()
             continue
         for plan in PLAN_COINS:
-            await update_summary_message(plan)
-            await asyncio.sleep(0.3)
             await update_live_message(plan)
+            await asyncio.sleep(0.3)
+            await update_summary_message(plan)
             await asyncio.sleep(0.5)
 
 # ─── WEBSOCKET ───────────────────────────────────────────────────────────────
