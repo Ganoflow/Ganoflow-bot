@@ -297,56 +297,62 @@ async def send_daily_news():
 
         for plan, (tokens, instruction) in configs.items():
             channel_id = CHANNELS.get(plan, 0)
-            if not channel_id:
+            if not channel_id or channel_id == 0:
+                print(f"⚠️ Skipping {plan} — no channel ID")
                 continue
-            analysis = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=tokens,
-                messages=[{"role": "user", "content": f"""
+            print(f"📰 Sending news to {plan} (channel: {channel_id})...")
+            try:
+                analysis = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=tokens,
+                    messages=[{"role": "user", "content": f"""
 You are a professional crypto analyst. {instruction}
 BTC: ${btc_price:,.2f} | Fear & Greed: {fear_val} ({fear_label}) | Date: {date_str}
 English only. Professional tone.
-                """}]
-            ).content[0].text
+                    """}]
+                ).content[0].text
 
-            bot = Bot(token=TELEGRAM_TOKEN)
-            news_msg = await bot.send_message(
-                chat_id=channel_id,
-                text=f"""📰 *Daily Market Analysis — {date_str}*
+                bot = Bot(token=TELEGRAM_TOKEN)
+                news_msg = await bot.send_message(
+                    chat_id=channel_id,
+                    text=f"""📰 *Daily Market Analysis — {date_str}*
 ━━━━━━━━━━━━━━━━━━━━
 {analysis}
 ━━━━━━━━━━━━━━━━━━━━
 😱 Fear & Greed: *{fear_val}* ({fear_label})
 💰 BTC: *${btc_price:,.2f}*
 🌐 ganoflow.com""",
-                parse_mode="Markdown"
-            )
-            # Pin the daily news
-            try:
-                await bot.pin_chat_message(chat_id=channel_id, message_id=news_msg.message_id, disable_notification=True)
-            except:
-                pass
-        print("✅ Daily news sent!")
-
-        # After news → create new live messages (not pinned, news stays pinned)
-        print("🔄 Creating new live messages after daily news...")
-        await asyncio.sleep(2)
-        for plan in PLAN_COINS:
-            channel_id = CHANNELS.get(plan, 0)
-            if not channel_id:
-                continue
-            bot2 = Bot(token=TELEGRAM_TOKEN)
-            try:
-                msg = await bot2.send_message(
-                    chat_id=channel_id,
-                    text=build_live_message(plan),
                     parse_mode="Markdown"
                 )
-                live_message_ids[plan] = msg.message_id
-                print(f"✅ New live message for {plan}: {msg.message_id}")
-            except Exception as e2:
-                print(f"❌ Live message error {plan}: {e2}")
+                print(f"✅ News sent to {plan}")
+
+                # Pin the daily news
+                try:
+                    await bot.pin_chat_message(chat_id=channel_id, message_id=news_msg.message_id, disable_notification=True)
+                    print(f"📌 News pinned for {plan}")
+                except Exception as pin_err:
+                    print(f"⚠️ Could not pin for {plan}: {pin_err}")
+
+                # Right after news → send new live message for this plan
+                await asyncio.sleep(2)
+                try:
+                    live_msg = await bot.send_message(
+                        chat_id=channel_id,
+                        text=build_live_message(plan),
+                        parse_mode="Markdown"
+                    )
+                    live_message_ids[plan] = live_msg.message_id
+                    print(f"✅ Live message created after news for {plan}: {live_msg.message_id}")
+                except Exception as live_err:
+                    print(f"❌ Live message error after news for {plan}: {live_err}")
+
+            except Exception as plan_err:
+                print(f"❌ Error processing {plan}: {plan_err}")
+
             await asyncio.sleep(1)
+
+        print("✅ Daily news + live messages done!")
+
     except Exception as e:
         print(f"❌ Daily news error: {e}")
 
