@@ -276,8 +276,7 @@ def build_summary_message(plan):
         lines.append(f"{icon} *{sym}* — 🐂{up_pct:.1f}% 🐻{down_pct:.1f}%")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("🌐 ganoflow.com")
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 # ─── LIVE MESSAGE MANAGER ────────────────────────────────────────────────────
 
