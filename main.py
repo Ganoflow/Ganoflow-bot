@@ -6,7 +6,6 @@ import os
 import websockets
 import requests
 import pickle
-import numpy as np
 from collections import deque
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -14,7 +13,8 @@ from datetime import datetime, timedelta
 
 # ML imports
 try:
-    import lightgbm as lgb
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
     from sklearn.preprocessing import StandardScaler
     ML_AVAILABLE = True
 except ImportError:
@@ -336,6 +336,7 @@ def train_model_for_symbol(symbol):
             print(f"❌ Not enough training samples for {symbol}")
             return False
 
+        import numpy as np
         X = np.array(X)
         y = np.array(y)
 
@@ -349,13 +350,12 @@ def train_model_for_symbol(symbol):
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
 
-        # Train LightGBM
-        model = lgb.LGBMClassifier(
+        # Train Random Forest
+        model = RandomForestClassifier(
             n_estimators=100,
-            learning_rate=0.05,
             max_depth=5,
             random_state=42,
-            verbose=-1
+            n_jobs=-1
         )
         model.fit(X_train, y_train)
 
