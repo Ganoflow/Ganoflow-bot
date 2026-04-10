@@ -48,6 +48,9 @@ price_history = {coin: deque(maxlen=100) for coin in COIN_NAMES}
 latest_prices = {}
 live_message_ids = {}
 
+# Cache Fear & Greed to avoid hitting API every 5 seconds
+fg_cache = {"value": "50", "label": "Neutral", "last_update": 0}
+
 # ─── TECHNICAL ANALYSIS ──────────────────────────────────────────────────────
 
 def calc_rsi(prices, period=14):
@@ -205,13 +208,18 @@ def fmt(price):
 
 def build_live_message(plan):
     coins = PLAN_COINS.get(plan, [])
-    try:
-        fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
-        fg_val = fg.get("data", [{"value":"50"}])[0].get("value", "50")
-        fg_label = fg.get("data", [{"value_classification":"Neutral"}])[0].get("value_classification", "Neutral")
-    except:
-        fg_val = "50"
-        fg_label = "Neutral"
+    global fg_cache
+    # Refresh Fear & Greed every 5 minutes only
+    if time.time() - fg_cache["last_update"] > 300:
+        try:
+            fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
+            fg_cache["value"] = fg.get("data", [{"value":"50"}])[0].get("value", "50")
+            fg_cache["label"] = fg.get("data", [{"value_classification":"Neutral"}])[0].get("value_classification", "Neutral")
+            fg_cache["last_update"] = time.time()
+        except:
+            pass
+    fg_val = fg_cache["value"]
+    fg_label = fg_cache["label"]
 
     date_str = datetime.utcnow().strftime("%m/%d/%Y")
     lines = [f"⚡ *LIVE — GanoFlow* | {date_str}"]
