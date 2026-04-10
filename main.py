@@ -47,8 +47,6 @@ client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 price_history = {coin: deque(maxlen=100) for coin in COIN_NAMES}
 latest_prices = {}
 live_message_ids = {}
-
-# Cache Fear & Greed to avoid hitting API every 5 seconds
 fg_cache = {"value": "50", "label": "Neutral", "last_update": 0}
 
 # ─── TECHNICAL ANALYSIS ──────────────────────────────────────────────────────
@@ -72,7 +70,6 @@ def calc_rsi(prices, period=14):
     return round(100 - (100 / (1 + rs)), 1)
 
 def calc_ema(prices, period):
-    """Exponential Moving Average"""
     pl = list(prices)
     if len(pl) < period:
         return pl[-1] if pl else 0
@@ -83,7 +80,6 @@ def calc_ema(prices, period):
     return ema
 
 def calc_macd(prices):
-    """MACD = EMA12 - EMA26, positive = bullish"""
     pl = list(prices)
     if len(pl) < 26:
         return 0
@@ -92,35 +88,45 @@ def calc_macd(prices):
     return ema12 - ema26
 
 def calc_momentum(prices, period=10):
-    """Price momentum = current vs N candles ago"""
     pl = list(prices)
     if len(pl) < period:
         return 0
     return ((pl[-1] - pl[-period]) / pl[-period]) * 100
 
+def get_rsi_label(rsi):
+    if rsi < 30:
+        return "Oversold 🟢"
+    elif rsi < 45:
+        return "Bearish 🟡"
+    elif rsi <= 55:
+        return "Neutral ⚪"
+    elif rsi <= 70:
+        return "Bullish 🟠"
+    else:
+        return "Overbought 🔴"
+
+def get_fg():
+    global fg_cache
+    if time.time() - fg_cache["last_update"] > 300:
+        try:
+            fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
+            fg_cache["value"] = fg.get("data", [{"value":"50"}])[0].get("value", "50")
+            fg_cache["label"] = fg.get("data", [{"value_classification":"Neutral"}])[0].get("value_classification", "Neutral")
+            fg_cache["last_update"] = time.time()
+        except:
+            pass
+    return fg_cache["value"], fg_cache["label"]
+
 def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50):
-    """
-    All factors combined:
-    1. Live tick momentum (primary - changes every second)
-    2. 5-candle price trend
-    3. RSI bias
-    4. MACD trend direction
-    5. Price momentum (10-candle)
-    6. Fear & Greed index
-    7. Trend consistency (are candles all going same way?)
-    8. Volatility amplifier
-    """
     up_base = 50.0
 
-    # 1. Tick momentum - most sensitive
+    # 1. Tick momentum
     tick_impact = tick_chg * 15
-    tick_impact = max(-20, min(20, tick_impact))
-    up_base += tick_impact
+    up_base += max(-20, min(20, tick_impact))
 
     # 2. Candle trend
     candle_impact = candle_chg * 6
-    candle_impact = max(-15, min(15, candle_impact))
-    up_base += candle_impact
+    up_base += max(-15, min(15, candle_impact))
 
     # 3. RSI bias
     if rsi < 30:
@@ -135,33 +141,27 @@ def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50):
     if prices is not None:
         pl = list(prices)
 
-        # 4. MACD direction
+        # 4. MACD
         macd = calc_macd(pl)
-        if macd > 0:
-            up_base += min(macd * 100, 5)   # bullish MACD
-        else:
-            up_base += max(macd * 100, -5)  # bearish MACD
+        up_base += max(-5, min(5, macd * 100))
 
-        # 5. Price momentum (10-candle)
+        # 5. 10-candle momentum
         mom = calc_momentum(pl, 10)
-        mom_impact = mom * 2
-        up_base += max(-8, min(8, mom_impact))
+        up_base += max(-8, min(8, mom * 2))
 
-        # 6. Trend consistency - count bullish vs bearish candles in last 5
+        # 6. Trend consistency (last 5 candles)
         if len(pl) >= 5:
             last5 = pl[-5:]
             bull_candles = sum(1 for i in range(1, len(last5)) if last5[i] > last5[i-1])
-            bear_candles = 4 - bull_candles
-            consistency = (bull_candles - bear_candles) * 2  # -8 to +8
-            up_base += consistency
+            up_base += (bull_candles - (4 - bull_candles)) * 2
 
-    # 7. Fear & Greed bias
+    # 7. Fear & Greed
     fg = float(fear_greed)
-    if fg < 25:      # extreme fear = oversold = bullish
+    if fg < 25:
         up_base += 5
     elif fg < 40:
         up_base += 2
-    elif fg > 75:    # extreme greed = overbought = bearish
+    elif fg > 75:
         up_base -= 5
     elif fg > 60:
         up_base -= 2
@@ -170,14 +170,10 @@ def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50):
     total_move = abs(tick_chg) + abs(candle_chg)
     if total_move > 1.0:
         amplifier = min(total_move * 2, 8)
-        if up_base > 50:
-            up_base += amplifier
-        else:
-            up_base -= amplifier
+        up_base += amplifier if up_base > 50 else -amplifier
 
     up_pct = round(max(20.0, min(80.0, up_base)), 3)
-    down_pct = round(100 - up_pct, 3)
-    return up_pct, down_pct
+    return up_pct, round(100 - up_pct, 3)
 
 def calc_targets(price, change_pct):
     v = abs(change_pct) / 100
@@ -208,18 +204,7 @@ def fmt(price):
 
 def build_live_message(plan):
     coins = PLAN_COINS.get(plan, [])
-    global fg_cache
-    # Refresh Fear & Greed every 5 minutes only
-    if time.time() - fg_cache["last_update"] > 300:
-        try:
-            fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
-            fg_cache["value"] = fg.get("data", [{"value":"50"}])[0].get("value", "50")
-            fg_cache["label"] = fg.get("data", [{"value_classification":"Neutral"}])[0].get("value_classification", "Neutral")
-            fg_cache["last_update"] = time.time()
-        except:
-            pass
-    fg_val = fg_cache["value"]
-    fg_label = fg_cache["label"]
+    fg_val, fg_label = get_fg()
 
     date_str = datetime.utcnow().strftime("%m/%d/%Y")
     lines = [f"⚡ *LIVE — GanoFlow* | {date_str}"]
@@ -233,21 +218,16 @@ def build_live_message(plan):
         pl = list(price_history[symbol])
         rsi = calc_rsi(price_history[symbol]) if len(pl) >= 5 else 50.0
 
-        # 5-candle move
         window = pl[-5:] if len(pl) >= 5 else (pl if len(pl) >= 2 else pl)
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
-
-        # Live tick vs last closed candle
         tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
-
-        # Display MOVE = combined
         chg = candle_chg + tick_chg
 
         up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
         direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
         bull_icon = "🐂" if up_pct >= down_pct else "🐻"
-        rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
+        rsi_label = get_rsi_label(rsi)
 
         if abs(chg) > 0.5:
             whale = "🐋 Heavy accumulation" if chg > 0 else "🐋 Heavy selling"
@@ -370,10 +350,8 @@ async def websocket_monitor():
                         is_closed = kline.get("x", False)
                         if close and symbol in COIN_NAMES:
                             if is_closed:
-                                # Closed candle → add to history
                                 price_history[symbol].append(close)
                             else:
-                                # Open candle → update latest price too
                                 latest_prices[symbol] = close
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
@@ -384,10 +362,7 @@ async def websocket_monitor():
 async def send_daily_news():
     print("📰 Sending daily market analysis...")
     try:
-        fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
-        fg_data = fg.get("data", [{"value":"50","value_classification":"Neutral"}])[0]
-        fear_val = fg_data.get("value", "50")
-        fear_label = fg_data.get("value_classification", "Neutral")
+        fg_val, fg_label = get_fg()
         btc_price = latest_prices.get("btcusdt", 0)
         date_str = datetime.now().strftime("%B %d, %Y")
 
@@ -409,7 +384,7 @@ async def send_daily_news():
                     max_tokens=tokens,
                     messages=[{"role": "user", "content": f"""
 You are a professional crypto analyst. {instruction}
-BTC: ${btc_price:,.2f} | Fear & Greed: {fear_val} ({fear_label}) | Date: {date_str}
+BTC: ${btc_price:,.2f} | Fear & Greed: {fg_val} ({fg_label}) | Date: {date_str}
 English only. Professional tone.
                     """}]
                 ).content[0].text
@@ -421,7 +396,7 @@ English only. Professional tone.
 ━━━━━━━━━━━━━━━━━━━━
 {analysis}
 ━━━━━━━━━━━━━━━━━━━━
-😱 Fear & Greed: *{fear_val}* ({fear_label})
+😱 Fear & Greed: *{fg_val}* ({fg_label})
 💰 BTC: *${btc_price:,.2f}*
 🌐 ganoflow.com""",
                     parse_mode="Markdown"
@@ -502,16 +477,17 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
         tick_chg = ((btc - window[-1]) / window[-1] * 100) if window and window[-1] else 0
         chg = candle_chg + tick_chg
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val)
+        fg_val, _ = get_fg()
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history["btcusdt"], fg_val)
         direction = "LONG 📈" if chg >= 0 else "SHORT 📉"
-        rsi_label = "Oversold 🟢" if rsi < 30 else "Overbought 🔴" if rsi > 70 else "Neutral ⚪"
+        rsi_label = get_rsi_label(rsi)
         await update.message.reply_text(f"""📊 *BITCOIN SIGNAL — GanoFlow*
 ━━━━━━━━━━━━━━━━━━━━
 💰 *{fmt(btc)}*
 📈 Change: *{chg:+.2f}%*
 ━━━━━━━━━━━━━━━━━━━━
 *{direction}*
-🐂 UP *{up_pct}%* | 🐻 DOWN *{down_pct}%*
+🐂 UP *{up_pct:.3f}%* | 🐻 DOWN *{down_pct:.3f}%*
 📊 RSI *{rsi}* — {rsi_label}
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ DYOR. ganoflow.com""", parse_mode="Markdown")
