@@ -2,7 +2,5 @@ anthropic
 requests
 python-telegram-bot==20.7
 websockets
-lightgbm
 scikit-learn
 numpy
-pandas
