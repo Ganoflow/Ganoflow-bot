@@ -223,10 +223,10 @@ def build_live_message(plan):
             continue
         sym = symbol.replace("usdt", "").upper()
         pl = list(price_history[symbol])
-        rsi = calc_rsi(price_history[symbol]) if len(pl) >= 15 else 50.0
+        rsi = calc_rsi(price_history[symbol]) if len(pl) >= 5 else 50.0
 
         # 5-candle move
-        window = pl[-5:] if len(pl) >= 5 else pl
+        window = pl[-5:] if len(pl) >= 5 else (pl if len(pl) >= 2 else pl)
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
 
         # Live tick vs last closed candle
@@ -360,8 +360,13 @@ async def websocket_monitor():
                         symbol = kline.get("s", "").lower()
                         close = float(kline.get("c", 0))
                         is_closed = kline.get("x", False)
-                        if close and symbol in COIN_NAMES and is_closed:
-                            price_history[symbol].append(close)
+                        if close and symbol in COIN_NAMES:
+                            if is_closed:
+                                # Closed candle → add to history
+                                price_history[symbol].append(close)
+                            else:
+                                # Open candle → update latest price too
+                                latest_prices[symbol] = close
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
@@ -485,7 +490,7 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         pl = list(price_history["btcusdt"])
         rsi = calc_rsi(price_history["btcusdt"])
-        window = pl[-5:] if len(pl) >= 5 else pl
+        window = pl[-5:] if len(pl) >= 5 else (pl if len(pl) >= 2 else pl)
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
         tick_chg = ((btc - window[-1]) / window[-1] * 100) if window and window[-1] else 0
         chg = candle_chg + tick_chg
