@@ -69,20 +69,15 @@ def calc_rsi(prices, period=14):
     return round(100 - (100 / (1 + rs)), 1)
 
 def calc_probability(rsi, change_pct):
-    if rsi < 30:
-        up_base = 70.0
-    elif rsi < 45:
-        up_base = 60.0
-    elif rsi > 70:
-        up_base = 30.0
-    elif rsi > 55:
-        up_base = 45.0
-    else:
-        up_base = 50.0
-    up_base += min(max(change_pct * 2.5, -15), 15)
-    # Add RSI fine-tune
-    up_base += (50 - rsi) * 0.1
-    up_pct = round(max(20.0, min(80.0, up_base)), 2)
+    # RSI base
+    rsi_component = (100 - rsi) / 100 * 60 + 20  # maps RSI 0-100 → UP% 80-20
+    
+    # Price momentum - stronger weight on recent move
+    momentum = change_pct * 8  # more sensitive multiplier
+    momentum = max(-25, min(25, momentum))
+    
+    # Combine
+    up_pct = round(max(20.0, min(80.0, rsi_component + momentum)), 2)
     down_pct = round(100 - up_pct, 2)
     return up_pct, down_pct
 
