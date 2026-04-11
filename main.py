@@ -587,30 +587,25 @@ async def update_summary_message(plan):
             await init_summary_message(plan)
 
 async def live_updater():
-    print("⏳ Waiting for WebSocket data...")
-    await asyncio.sleep(15)
+    """Only EDITS existing messages. send_daily_news() creates them once per day."""
+    print("⏳ Waiting for first daily news to create messages...")
+    # Wait up to 30s for messages to be created by send_daily_news
+    # If no messages exist yet (e.g. bot restarted mid-day), create them once
+    await asyncio.sleep(30)
     for plan in PLAN_COINS:
-        await init_live_message(plan)
-        await asyncio.sleep(0.5)
-        await init_summary_message(plan)
-        await asyncio.sleep(1)
-    last_reset = time.time()
+        if not live_message_ids.get(plan):
+            await init_live_message(plan)
+            await asyncio.sleep(0.5)
+        if not summary_message_ids.get(plan):
+            await init_summary_message(plan)
+            await asyncio.sleep(0.5)
     while True:
-        await asyncio.sleep(5)
-        if time.time() - last_reset > 86400:
-            print("🔄 24h reset - new live messages...")
-            for plan in PLAN_COINS:
-                await init_live_message(plan)
-                await asyncio.sleep(0.5)
-                await init_summary_message(plan)
-                await asyncio.sleep(1)
-            last_reset = time.time()
-            continue
+        await asyncio.sleep(2)
         for plan in PLAN_COINS:
             await update_live_message(plan)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.25)
             await update_summary_message(plan)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.25)
 
 # ─── WEBSOCKET ───────────────────────────────────────────────────────────────
 
@@ -699,11 +694,29 @@ English only. Professional tone.
                 except:
                     pass
                 await asyncio.sleep(2)
+                # Send Live message right after news
                 try:
-                    live_msg = await bot.send_message(chat_id=channel_id, text=build_live_message(plan), parse_mode="Markdown")
+                    live_msg = await bot.send_message(
+                        chat_id=channel_id,
+                        text=build_live_message(plan),
+                        parse_mode="Markdown"
+                    )
                     live_message_ids[plan] = live_msg.message_id
+                    print(f"✅ Live message created for {plan}: {live_msg.message_id}")
                 except Exception as e:
                     print(f"❌ Live message error: {e}")
+                await asyncio.sleep(1)
+                # Send Summary message right after live message
+                try:
+                    summary_msg = await bot.send_message(
+                        chat_id=channel_id,
+                        text=build_summary_message(plan),
+                        parse_mode="Markdown"
+                    )
+                    summary_message_ids[plan] = summary_msg.message_id
+                    print(f"✅ Summary message created for {plan}: {summary_msg.message_id}")
+                except Exception as e:
+                    print(f"❌ Summary message error: {e}")
             except Exception as e:
                 print(f"❌ Error {plan}: {e}")
             await asyncio.sleep(1)
