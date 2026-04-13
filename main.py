@@ -646,13 +646,15 @@ async def send_daily_news():
         overall_acc = get_overall_accuracy()
         acc_str = f"\n📊 Signal Accuracy: {overall_acc}% (live tracked)" if overall_acc else ""
 
-        configs = {
+        # Paid plans get news + live + summary
+        news_configs = {
             "basic":    (300, "Write a SHORT 3-4 sentence daily market brief."),
             "standard": (500, "Write a MEDIUM 5-7 sentence daily market analysis covering BTC/ETH levels, altcoin sentiment, and outlook."),
             "premium":  (800, "Write a DETAILED analysis with sections: Market Overview, BTC & ETH Levels, Altcoin Sectors, Macro Factors, and Today's Outlook."),
         }
 
-        for plan, (tokens, instruction) in configs.items():
+        # Send news to paid plans
+        for plan, (tokens, instruction) in news_configs.items():
             channel_id = CHANNELS.get(plan, 0)
             if not channel_id or channel_id == 0:
                 continue
@@ -684,33 +686,41 @@ English only. Professional tone.
                     await bot.pin_chat_message(chat_id=channel_id, message_id=news_msg.message_id, disable_notification=True)
                 except:
                     pass
-                await asyncio.sleep(2)
-                # Send Live message right after news
-                try:
-                    live_msg = await bot.send_message(
-                        chat_id=channel_id,
-                        text=build_live_message(plan),
-                        parse_mode="Markdown"
-                    )
-                    live_message_ids[plan] = live_msg.message_id
-                    print(f"✅ Live message created for {plan}: {live_msg.message_id}")
-                except Exception as e:
-                    print(f"❌ Live message error: {e}")
-                await asyncio.sleep(1)
-                # Send Summary message right after live message
-                try:
-                    summary_msg = await bot.send_message(
-                        chat_id=channel_id,
-                        text=build_summary_message(plan),
-                        parse_mode="Markdown"
-                    )
-                    summary_message_ids[plan] = summary_msg.message_id
-                    print(f"✅ Summary message created for {plan}: {summary_msg.message_id}")
-                except Exception as e:
-                    print(f"❌ Summary message error: {e}")
+                print(f"✅ News sent to {plan}")
             except Exception as e:
-                print(f"❌ Error {plan}: {e}")
+                print(f"❌ News error {plan}: {e}")
             await asyncio.sleep(1)
+
+        # Send live + summary to ALL plans (including free)
+        for plan in PLAN_COINS:
+            channel_id = CHANNELS.get(plan, 0)
+            if not channel_id or channel_id == 0:
+                continue
+            bot = Bot(token=TELEGRAM_TOKEN)
+            await asyncio.sleep(1)
+            try:
+                live_msg = await bot.send_message(
+                    chat_id=channel_id,
+                    text=build_live_message(plan),
+                    parse_mode="Markdown"
+                )
+                live_message_ids[plan] = live_msg.message_id
+                print(f"✅ Live message created for {plan}: {live_msg.message_id}")
+            except Exception as e:
+                print(f"❌ Live message error {plan}: {e}")
+            await asyncio.sleep(1)
+            try:
+                summary_msg = await bot.send_message(
+                    chat_id=channel_id,
+                    text=build_summary_message(plan),
+                    parse_mode="Markdown"
+                )
+                summary_message_ids[plan] = summary_msg.message_id
+                print(f"✅ Summary message created for {plan}: {summary_msg.message_id}")
+            except Exception as e:
+                print(f"❌ Summary message error {plan}: {e}")
+            await asyncio.sleep(1)
+
         print("✅ Daily news done!")
     except Exception as e:
         print(f"❌ Daily news error: {e}")
