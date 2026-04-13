@@ -540,8 +540,7 @@ async def update_live_message(plan):
         return
     msg_id = live_message_ids.get(plan)
     if not msg_id:
-        await init_live_message(plan)
-        return
+        return  # Wait for daily news to create it
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
         await bot.edit_message_text(chat_id=channel_id, message_id=msg_id, text=build_live_message(plan), parse_mode="Markdown")
@@ -573,8 +572,7 @@ async def update_summary_message(plan):
         return
     msg_id = summary_message_ids.get(plan)
     if not msg_id:
-        await init_summary_message(plan)
-        return
+        return  # Wait for daily news to create it
     bot = Bot(token=TELEGRAM_TOKEN)
     try:
         await bot.edit_message_text(chat_id=channel_id, message_id=msg_id, text=build_summary_message(plan), parse_mode="Markdown")
@@ -587,25 +585,18 @@ async def update_summary_message(plan):
             await init_summary_message(plan)
 
 async def live_updater():
-    """Only EDITS existing messages. send_daily_news() creates them once per day."""
-    print("⏳ Waiting for first daily news to create messages...")
-    # Wait up to 30s for messages to be created by send_daily_news
-    # If no messages exist yet (e.g. bot restarted mid-day), create them once
-    await asyncio.sleep(30)
-    for plan in PLAN_COINS:
-        if not live_message_ids.get(plan):
-            await init_live_message(plan)
-            await asyncio.sleep(0.5)
-        if not summary_message_ids.get(plan):
-            await init_summary_message(plan)
-            await asyncio.sleep(0.5)
+    """Only EDITS existing messages. NEVER creates new ones. send_daily_news() creates them."""
+    print("⏳ Live updater waiting for daily news to create messages...")
     while True:
         await asyncio.sleep(2)
+        # Only edit if message IDs exist (created by send_daily_news)
         for plan in PLAN_COINS:
-            await update_live_message(plan)
-            await asyncio.sleep(0.25)
-            await update_summary_message(plan)
-            await asyncio.sleep(0.25)
+            if live_message_ids.get(plan):
+                await update_live_message(plan)
+                await asyncio.sleep(0.25)
+            if summary_message_ids.get(plan):
+                await update_summary_message(plan)
+                await asyncio.sleep(0.25)
 
 # ─── WEBSOCKET ───────────────────────────────────────────────────────────────
 
