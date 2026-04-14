@@ -207,17 +207,19 @@ def log_signal(symbol, direction, price):
     if len(signal_log) > 500:
         signal_log.pop(0)
 
-def build_live_message(plan):
-    coins = PLAN_COINS.get(plan, [])
-    fg_val, fg_label = get_fg()
-    date_str = datetime.utcnow().strftime("%m/%d/%Y")
-    lines = [f"⚡ *LIVE — GanoFlow* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
+# Global snapshot — calculated ONCE per cycle for ALL plans/coins simultaneously
+# This ensures BTC shows identical UP/DOWN % across Free, Basic, Standard, Premium
+global_snapshot = {"fg_val": "50", "fg_label": "Neutral", "coins": {}, "timestamp": 0}
 
-    for symbol in coins:
+def refresh_global_snapshot():
+    """Recalculate ALL coins at the exact same moment. Called once per update cycle."""
+    fg_val, fg_label = get_fg()
+    coins_data = {}
+    all_coins = list(COIN_NAMES.keys())
+    for symbol in all_coins:
         price = latest_prices.get(symbol)
         if not price:
             continue
-        sym = symbol.replace("usdt", "").upper()
         pl = list(price_history[symbol])
         rsi = calc_rsi(pl) if len(pl) >= 5 else 50.0
         window = pl[-5:] if len(pl) >= 5 else pl
@@ -226,11 +228,39 @@ def build_live_message(plan):
         chg = candle_chg + tick_chg
         up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val, symbol)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
+        coins_data[symbol] = {
+            "price": price, "rsi": rsi, "chg": chg,
+            "up_pct": up_pct, "down_pct": down_pct,
+            "e_low": e_low, "e_high": e_high,
+            "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
+        }
+        log_signal(symbol, "LONG" if chg >= 0 else "SHORT", price)
+    global_snapshot["fg_val"] = fg_val
+    global_snapshot["fg_label"] = fg_label
+    global_snapshot["coins"] = coins_data
+    global_snapshot["timestamp"] = time.time()
+
+def build_live_message(plan):
+    data = global_snapshot
+    fg_val = data["fg_val"]
+    fg_label = data["fg_label"]
+    date_str = datetime.utcnow().strftime("%m/%d/%Y")
+    lines = [f"⚡ *LIVE — GanoFlow* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
+
+    for symbol in PLAN_COINS.get(plan, []):
+        d = data["coins"].get(symbol)
+        if not d:
+            continue
+        sym = symbol.replace("usdt", "").upper()
+        price = d["price"]
+        rsi = d["rsi"]
+        chg = d["chg"]
+        up_pct = d["up_pct"]
+        down_pct = d["down_pct"]
         direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
         bull_icon = "🐂" if up_pct >= down_pct else "🐻"
         rsi_label = get_rsi_label(rsi)
         whale = "🐋 Heavy accumulation" if chg > 0.5 else "🐋 Heavy selling" if chg < -0.5 else "🐋 Moderate whale activity" if abs(chg) > 0.2 else "🐋 Low whale activity"
-        log_signal(symbol, "LONG" if chg >= 0 else "SHORT", price)
 
         lines.append(f"{bull_icon} *{sym}/USDT*")
         lines.append(f"PRICE　　　*{fmt(price)}*")
@@ -239,9 +269,9 @@ def build_live_message(plan):
         lines.append(f"🐂 UP　　　*{up_pct:.3f}%*")
         lines.append(f"🐻 DOWN　*{down_pct:.3f}%*")
         if plan != "free":
-            lines.append(f"ENTRY　　　*{fmt(e_low)} — {fmt(e_high)}*")
-            lines.append(f"TP1/TP2/TP3　*{fmt(tp1)} / {fmt(tp2)} / {fmt(tp3)}*")
-            lines.append(f"STOP LOSS　*{fmt(sl)}*")
+            lines.append(f"ENTRY　　　*{fmt(d['e_low'])} — {fmt(d['e_high'])}*")
+            lines.append(f"TP1/TP2/TP3　*{fmt(d['tp1'])} / {fmt(d['tp2'])} / {fmt(d['tp3'])}*")
+            lines.append(f"STOP LOSS　*{fmt(d['sl'])}*")
             lines.append(f"{whale}")
         lines.append(f"RSI　　　　*{rsi}* — {rsi_label}")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
@@ -257,21 +287,16 @@ def build_live_message(plan):
     return "\n".join(lines)
 
 def build_summary_message(plan):
-    coins = PLAN_COINS.get(plan, [])
-    fg_val, _ = get_fg()
+    data = global_snapshot
     date_str = datetime.utcnow().strftime("%m/%d/%Y")
     lines = [f"📊 *GanoFlow Summary* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
-    for symbol in coins:
-        price = latest_prices.get(symbol)
-        if not price:
+    for symbol in PLAN_COINS.get(plan, []):
+        d = data["coins"].get(symbol)
+        if not d:
             continue
         sym = symbol.replace("usdt", "").upper()
-        pl = list(price_history[symbol])
-        rsi = calc_rsi(pl) if len(pl) >= 5 else 50.0
-        window = pl[-5:] if len(pl) >= 5 else pl
-        candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
-        tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val, symbol)
+        up_pct = d["up_pct"]
+        down_pct = d["down_pct"]
         icon = "🐂" if up_pct >= down_pct else "🐻"
         lines.append(f"{icon} *{sym}* — 🐂{up_pct:.3f}% 🐻{down_pct:.3f}%")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
