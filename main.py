@@ -290,49 +290,87 @@ def build_summary_message(plan):
 # ─── LIVE UPDATER ─────────────────────────────────────────────────────────────
 
 async def live_updater():
-    """Edits live + summary messages every 2 seconds. Never creates new ones."""
     print("⏳ Live updater started...")
+    await asyncio.sleep(15)  # wait for websocket data first
+
+    # Create initial messages for all plans
+    for plan in PLAN_COINS:
+        channel_id = CHANNELS.get(plan, 0)
+        if not channel_id:
+            continue
+        bot = Bot(token=TELEGRAM_TOKEN)
+        try:
+            msg = await bot.send_message(chat_id=channel_id, text=build_live_message(plan), parse_mode="Markdown")
+            live_message_ids[plan] = msg.message_id
+            print(f"✅ Live message created for {plan}: {msg.message_id}")
+        except Exception as e:
+            print(f"❌ Init live error {plan}: {e}")
+        await asyncio.sleep(0.5)
+        try:
+            msg2 = await bot.send_message(chat_id=channel_id, text=build_summary_message(plan), parse_mode="Markdown")
+            summary_message_ids[plan] = msg2.message_id
+            print(f"✅ Summary message created for {plan}: {msg2.message_id}")
+        except Exception as e:
+            print(f"❌ Init summary error {plan}: {e}")
+        await asyncio.sleep(1)
+
+    last_reset = time.time()
     while True:
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
+        # 24h reset
+        if time.time() - last_reset > 86400:
+            print("🔄 24h reset...")
+            for plan in PLAN_COINS:
+                channel_id = CHANNELS.get(plan, 0)
+                if not channel_id:
+                    continue
+                bot = Bot(token=TELEGRAM_TOKEN)
+                try:
+                    msg = await bot.send_message(chat_id=channel_id, text=build_live_message(plan), parse_mode="Markdown")
+                    live_message_ids[plan] = msg.message_id
+                except Exception as e:
+                    print(f"❌ Reset live error {plan}: {e}")
+                await asyncio.sleep(0.5)
+                try:
+                    msg2 = await bot.send_message(chat_id=channel_id, text=build_summary_message(plan), parse_mode="Markdown")
+                    summary_message_ids[plan] = msg2.message_id
+                except Exception as e:
+                    print(f"❌ Reset summary error {plan}: {e}")
+                await asyncio.sleep(1)
+            last_reset = time.time()
+            continue
+
         for plan in PLAN_COINS:
             channel_id = CHANNELS.get(plan, 0)
             if not channel_id:
                 continue
             bot = Bot(token=TELEGRAM_TOKEN)
+            # Edit live
             if live_message_ids.get(plan):
                 try:
-                    await bot.edit_message_text(
-                        chat_id=channel_id,
-                        message_id=live_message_ids[plan],
-                        text=build_live_message(plan),
-                        parse_mode="Markdown"
-                    )
+                    await bot.edit_message_text(chat_id=channel_id, message_id=live_message_ids[plan], text=build_live_message(plan), parse_mode="Markdown")
                 except Exception as e:
                     err = str(e)
-                    if "message is not modified" in err:
+                    if "not modified" in err.lower():
                         pass
                     elif "not found" in err.lower():
                         live_message_ids.pop(plan, None)
                     else:
-                        print(f"❌ Live edit {plan}: {e}")
-            await asyncio.sleep(0.25)
+                        print(f"⚠️ Live edit {plan}: {e}")
+            await asyncio.sleep(0.3)
+            # Edit summary
             if summary_message_ids.get(plan):
                 try:
-                    await bot.edit_message_text(
-                        chat_id=channel_id,
-                        message_id=summary_message_ids[plan],
-                        text=build_summary_message(plan),
-                        parse_mode="Markdown"
-                    )
+                    await bot.edit_message_text(chat_id=channel_id, message_id=summary_message_ids[plan], text=build_summary_message(plan), parse_mode="Markdown")
                 except Exception as e:
                     err = str(e)
-                    if "message is not modified" in err:
+                    if "not modified" in err.lower():
                         pass
                     elif "not found" in err.lower():
                         summary_message_ids.pop(plan, None)
                     else:
-                        print(f"❌ Summary edit {plan}: {e}")
-            await asyncio.sleep(0.25)
+                        print(f"⚠️ Summary edit {plan}: {e}")
+            await asyncio.sleep(0.3)
 
 # ─── WEBSOCKET ────────────────────────────────────────────────────────────────
 
