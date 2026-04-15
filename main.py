@@ -169,6 +169,12 @@ def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50, symb
     if total > 1.0:
         amp = min(total * 2, 8)
         up_base += amp if up_base > 50 else -amp
+    # Volatility amplifier
+    total_move = abs(tick_chg) + abs(candle_chg)
+    if total_move > 1.0:
+        amplifier = min(total_move * 2, 8)
+        up_base += amplifier if up_base > 50 else -amplifier
+
     up_pct = round(max(20.0, min(80.0, up_base)), 3)
     return up_pct, round(100 - up_pct, 3)
 
@@ -404,6 +410,7 @@ async def websocket_monitor():
                             if is_closed:
                                 price_history[symbol].append(close)
                             else:
+                                # Open candle → update latest price too
                                 latest_prices[symbol] = close
         except Exception as e:
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
