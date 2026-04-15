@@ -56,14 +56,14 @@ try:
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.preprocessing import StandardScaler
     ML_AVAILABLE = True
-    print("ML libraries loaded")
 except ImportError:
     ML_AVAILABLE = False
-    print("ML not available, using math-based probability")
 
 ml_models = {}
 ml_scalers = {}
 ml_accuracy = {}
+
+# ─── TECHNICAL ANALYSIS ──────────────────────────────────────────────────────
 
 def calc_rsi(prices, period=14):
     pl = list(prices)
@@ -117,36 +117,29 @@ def get_fg():
     if time.time() - fg_cache["last_update"] > 300:
         try:
             fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
-            fg_cache["value"] = fg.get("data", [{"value": "50"}])[0].get("value", "50")
-            fg_cache["label"] = fg.get("data", [{"value_classification": "Neutral"}])[0].get("value_classification", "Neutral")
+            fg_cache["value"] = fg["data"][0]["value"]
+            fg_cache["label"] = fg["data"][0]["value_classification"]
             fg_cache["last_update"] = time.time()
         except:
             pass
     return fg_cache["value"], fg_cache["label"]
 
-def extract_features(pl, candle_chg, tick_chg, fg_val=50):
-    if len(pl) < 30:
-        return None
-    rsi = calc_rsi(pl)
-    macd = calc_macd(pl)
-    mom10 = calc_momentum(pl, 10)
-    mom20 = calc_momentum(pl, 20)
-    ema9 = calc_ema(pl, 9)
-    ema21 = calc_ema(pl, 21)
-    ema_cross = (ema9 - ema21) / ema21 * 100 if ema21 else 0
-    last5 = pl[-5:]
-    bull_candles = sum(1 for i in range(1, len(last5)) if last5[i] > last5[i-1])
-    return [rsi, macd * 1000, mom10, mom20, bull_candles, ema_cross, candle_chg, tick_chg, float(fg_val), abs(candle_chg) + abs(tick_chg)]
-
 def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50, symbol=None):
     if ML_AVAILABLE and symbol and symbol in ml_models and prices is not None:
         try:
             pl = list(prices)
-            features = extract_features(pl, candle_chg, tick_chg, fear_greed)
-            if features:
+            if len(pl) >= 30:
+                ema9 = calc_ema(pl, 9)
+                ema21 = calc_ema(pl, 21)
+                ema_cross = (ema9 - ema21) / ema21 * 100 if ema21 else 0
+                last5 = pl[-5:]
+                bull_c = sum(1 for i in range(1, len(last5)) if last5[i] > last5[i-1])
+                features = [rsi, calc_macd(pl)*1000, calc_momentum(pl,10), calc_momentum(pl,20),
+                           bull_c, ema_cross, candle_chg, tick_chg, float(fear_greed),
+                           abs(candle_chg)+abs(tick_chg)]
                 X = ml_scalers[symbol].transform([features])
-                prob_up = ml_models[symbol].predict_proba(X)[0][1]
-                up_pct = round(max(20.0, min(80.0, prob_up * 100)), 3)
+                prob = ml_models[symbol].predict_proba(X)[0][1]
+                up_pct = round(max(20.0, min(80.0, prob * 100)), 3)
                 return up_pct, round(100 - up_pct, 3)
         except:
             pass
@@ -160,41 +153,39 @@ def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50, symb
     elif rsi > 60: up_base -= 5
     if prices is not None:
         pl = list(prices)
-        macd = calc_macd(pl)
-        up_base += max(-5, min(5, macd * 100))
-        mom = calc_momentum(pl, 10)
-        up_base += max(-8, min(8, mom * 2))
+        up_base += max(-5, min(5, calc_macd(pl) * 100))
+        up_base += max(-8, min(8, calc_momentum(pl, 10) * 2))
         if len(pl) >= 5:
             last5 = pl[-5:]
-            bull_candles = sum(1 for i in range(1, len(last5)) if last5[i] > last5[i-1])
-            up_base += (bull_candles - (4 - bull_candles)) * 2
+            bull_c = sum(1 for i in range(1, len(last5)) if last5[i] > last5[i-1])
+            up_base += (bull_c - (4 - bull_c)) * 2
     fg = float(fear_greed)
     if fg < 25:   up_base += 5
     elif fg < 40: up_base += 2
     elif fg > 75: up_base -= 5
     elif fg > 60: up_base -= 2
-    total_move = abs(tick_chg) + abs(candle_chg)
-    if total_move > 1.0:
-        amplifier = min(total_move * 2, 8)
-        up_base += amplifier if up_base > 50 else -amplifier
+    total = abs(tick_chg) + abs(candle_chg)
+    if total > 1.0:
+        amp = min(total * 2, 8)
+        up_base += amp if up_base > 50 else -amp
     up_pct = round(max(20.0, min(80.0, up_base)), 3)
     return up_pct, round(100 - up_pct, 3)
 
 def calc_targets(price, change_pct):
     v = abs(change_pct) / 100
     if change_pct >= 0:
-        return (round(price*0.999, 4), round(price*1.001, 4),
-                round(price*(1+max(v*2, 0.01)), 4), round(price*(1+max(v*4, 0.02)), 4),
-                round(price*(1+max(v*6, 0.03)), 4), round(price*(1-max(v*2.5, 0.015)), 4))
+        return (round(price*0.999,4), round(price*1.001,4),
+                round(price*(1+max(v*2,0.01)),4), round(price*(1+max(v*4,0.02)),4),
+                round(price*(1+max(v*6,0.03)),4), round(price*(1-max(v*2.5,0.015)),4))
     else:
-        return (round(price*0.999, 4), round(price*1.001, 4),
-                round(price*(1-max(v*2, 0.01)), 4), round(price*(1-max(v*4, 0.02)), 4),
-                round(price*(1-max(v*6, 0.03)), 4), round(price*(1+max(v*2.5, 0.015)), 4))
+        return (round(price*0.999,4), round(price*1.001,4),
+                round(price*(1-max(v*2,0.01)),4), round(price*(1-max(v*4,0.02)),4),
+                round(price*(1-max(v*6,0.03)),4), round(price*(1+max(v*2.5,0.015)),4))
 
 def fmt(price):
-    if price >= 1000:   return f"${price:,.2f}"
-    elif price >= 1:    return f"${price:,.4f}"
-    else:               return f"${price:.6f}"
+    if price >= 1000:  return f"${price:,.2f}"
+    elif price >= 1:   return f"${price:,.4f}"
+    else:              return f"${price:.6f}"
 
 def get_overall_accuracy():
     resolved = [s for s in signal_log if s.get("result") is not None]
@@ -207,60 +198,37 @@ def log_signal(symbol, direction, price):
     if len(signal_log) > 500:
         signal_log.pop(0)
 
-# Global snapshot — calculated ONCE per cycle for ALL plans/coins simultaneously
-# This ensures BTC shows identical UP/DOWN % across Free, Basic, Standard, Premium
-global_snapshot = {"fg_val": "50", "fg_label": "Neutral", "coins": {}, "timestamp": 0}
-
-def refresh_global_snapshot():
-    """Recalculate ALL coins at the exact same moment. Called once per update cycle."""
+def build_live_message(plan):
+    coins = PLAN_COINS.get(plan, [])
     fg_val, fg_label = get_fg()
-    coins_data = {}
-    all_coins = list(COIN_NAMES.keys())
-    for symbol in all_coins:
+    date_str = datetime.utcnow().strftime("%m/%d/%Y")
+    lines = [f"⚡ *LIVE — GanoFlow* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
+
+    has_data = False
+    for symbol in coins:
         price = latest_prices.get(symbol)
         if not price:
             continue
+        has_data = True
+        sym = symbol.replace("usdt", "").upper()
         pl = list(price_history[symbol])
         rsi = calc_rsi(pl) if len(pl) >= 5 else 50.0
         window = pl[-5:] if len(pl) >= 5 else pl
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
         tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
         chg = candle_chg + tick_chg
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history[symbol], fg_val, symbol)
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl, fg_val, symbol)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
-        coins_data[symbol] = {
-            "price": price, "rsi": rsi, "chg": chg,
-            "up_pct": up_pct, "down_pct": down_pct,
-            "e_low": e_low, "e_high": e_high,
-            "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
-        }
-        log_signal(symbol, "LONG" if chg >= 0 else "SHORT", price)
-    global_snapshot["fg_val"] = fg_val
-    global_snapshot["fg_label"] = fg_label
-    global_snapshot["coins"] = coins_data
-    global_snapshot["timestamp"] = time.time()
-
-def build_live_message(plan):
-    data = global_snapshot
-    fg_val = data["fg_val"]
-    fg_label = data["fg_label"]
-    date_str = datetime.utcnow().strftime("%m/%d/%Y")
-    lines = [f"⚡ *LIVE — GanoFlow* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
-
-    for symbol in PLAN_COINS.get(plan, []):
-        d = data["coins"].get(symbol)
-        if not d:
-            continue
-        sym = symbol.replace("usdt", "").upper()
-        price = d["price"]
-        rsi = d["rsi"]
-        chg = d["chg"]
-        up_pct = d["up_pct"]
-        down_pct = d["down_pct"]
         direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
         bull_icon = "🐂" if up_pct >= down_pct else "🐻"
         rsi_label = get_rsi_label(rsi)
-        whale = "🐋 Heavy accumulation" if chg > 0.5 else "🐋 Heavy selling" if chg < -0.5 else "🐋 Moderate whale activity" if abs(chg) > 0.2 else "🐋 Low whale activity"
+        if abs(chg) > 0.5:
+            whale = "🐋 Heavy accumulation" if chg > 0 else "🐋 Heavy selling"
+        elif abs(chg) > 0.2:
+            whale = "🐋 Moderate whale activity"
+        else:
+            whale = "🐋 Low whale activity"
+        log_signal(symbol, "LONG" if chg >= 0 else "SHORT", price)
 
         lines.append(f"{bull_icon} *{sym}/USDT*")
         lines.append(f"PRICE　　　*{fmt(price)}*")
@@ -269,11 +237,15 @@ def build_live_message(plan):
         lines.append(f"🐂 UP　　　*{up_pct:.3f}%*")
         lines.append(f"🐻 DOWN　*{down_pct:.3f}%*")
         if plan != "free":
-            lines.append(f"ENTRY　　　*{fmt(d['e_low'])} — {fmt(d['e_high'])}*")
-            lines.append(f"TP1/TP2/TP3　*{fmt(d['tp1'])} / {fmt(d['tp2'])} / {fmt(d['tp3'])}*")
-            lines.append(f"STOP LOSS　*{fmt(d['sl'])}*")
+            lines.append(f"ENTRY　　　*{fmt(e_low)} — {fmt(e_high)}*")
+            lines.append(f"TP1/TP2/TP3　*{fmt(tp1)} / {fmt(tp2)} / {fmt(tp3)}*")
+            lines.append(f"STOP LOSS　*{fmt(sl)}*")
             lines.append(f"{whale}")
         lines.append(f"RSI　　　　*{rsi}* — {rsi_label}")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    if not has_data:
+        lines.append("⏳ Loading market data...")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
 
     lines.append(f"😱 Fear & Greed: *{fg_val}* ({fg_label})")
@@ -287,18 +259,27 @@ def build_live_message(plan):
     return "\n".join(lines)
 
 def build_summary_message(plan):
-    data = global_snapshot
+    coins = PLAN_COINS.get(plan, [])
+    fg_val, _ = get_fg()
     date_str = datetime.utcnow().strftime("%m/%d/%Y")
     lines = [f"📊 *GanoFlow Summary* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
-    for symbol in PLAN_COINS.get(plan, []):
-        d = data["coins"].get(symbol)
-        if not d:
+    has_data = False
+    for symbol in coins:
+        price = latest_prices.get(symbol)
+        if not price:
             continue
+        has_data = True
         sym = symbol.replace("usdt", "").upper()
-        up_pct = d["up_pct"]
-        down_pct = d["down_pct"]
+        pl = list(price_history[symbol])
+        rsi = calc_rsi(pl) if len(pl) >= 5 else 50.0
+        window = pl[-5:] if len(pl) >= 5 else pl
+        candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
+        tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl, fg_val, symbol)
         icon = "🐂" if up_pct >= down_pct else "🐻"
         lines.append(f"{icon} *{sym}* — 🐂{up_pct:.3f}% 🐻{down_pct:.3f}%")
+    if not has_data:
+        lines.append("⏳ Loading market data...")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     acc = get_overall_accuracy()
     if acc:
@@ -306,47 +287,54 @@ def build_summary_message(plan):
     lines.append("🌐 ganoflow.com")
     return "\n".join(lines)
 
-async def send_message_to(channel_id, text):
-    bot = Bot(token=TELEGRAM_TOKEN)
-    return await bot.send_message(chat_id=channel_id, text=text, parse_mode="Markdown")
-
-async def edit_message(channel_id, msg_id, text):
-    bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.edit_message_text(chat_id=channel_id, message_id=msg_id, text=text, parse_mode="Markdown")
+# ─── LIVE UPDATER ─────────────────────────────────────────────────────────────
 
 async def live_updater():
-    """Only edits existing live + summary messages every 2 seconds. Never creates."""
-    print("⏳ Live updater started — waiting for daily news to create messages...")
+    """Edits live + summary messages every 2 seconds. Never creates new ones."""
+    print("⏳ Live updater started...")
     while True:
         await asyncio.sleep(2)
         for plan in PLAN_COINS:
             channel_id = CHANNELS.get(plan, 0)
             if not channel_id:
                 continue
-            # Edit live message
+            bot = Bot(token=TELEGRAM_TOKEN)
             if live_message_ids.get(plan):
                 try:
-                    await edit_message(channel_id, live_message_ids[plan], build_live_message(plan))
+                    await bot.edit_message_text(
+                        chat_id=channel_id,
+                        message_id=live_message_ids[plan],
+                        text=build_live_message(plan),
+                        parse_mode="Markdown"
+                    )
                 except Exception as e:
                     err = str(e)
-                    if "message is not modified" not in err:
-                        if "not found" in err.lower():
-                            live_message_ids.pop(plan, None)
-                        else:
-                            print(f"❌ Live edit error {plan}: {e}")
+                    if "message is not modified" in err:
+                        pass
+                    elif "not found" in err.lower():
+                        live_message_ids.pop(plan, None)
+                    else:
+                        print(f"❌ Live edit {plan}: {e}")
             await asyncio.sleep(0.25)
-            # Edit summary message
             if summary_message_ids.get(plan):
                 try:
-                    await edit_message(channel_id, summary_message_ids[plan], build_summary_message(plan))
+                    await bot.edit_message_text(
+                        chat_id=channel_id,
+                        message_id=summary_message_ids[plan],
+                        text=build_summary_message(plan),
+                        parse_mode="Markdown"
+                    )
                 except Exception as e:
                     err = str(e)
-                    if "message is not modified" not in err:
-                        if "not found" in err.lower():
-                            summary_message_ids.pop(plan, None)
-                        else:
-                            print(f"❌ Summary edit error {plan}: {e}")
+                    if "message is not modified" in err:
+                        pass
+                    elif "not found" in err.lower():
+                        summary_message_ids.pop(plan, None)
+                    else:
+                        print(f"❌ Summary edit {plan}: {e}")
             await asyncio.sleep(0.25)
+
+# ─── WEBSOCKET ────────────────────────────────────────────────────────────────
 
 async def websocket_monitor():
     trade_streams = "/".join([f"{coin}@aggTrade" for coin in COIN_NAMES])
@@ -382,14 +370,9 @@ async def websocket_monitor():
             print(f"❌ WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
+# ─── DAILY NEWS ───────────────────────────────────────────────────────────────
+
 async def send_daily_news():
-    """
-    Runs at 9:30 AM ET every day.
-    Order per channel:
-    1. News (pinned) — paid plans only
-    2. Live message — ALL plans
-    3. Summary message — ALL plans
-    """
     print("📰 Daily news starting...")
     try:
         fg_val, fg_label = get_fg()
@@ -398,17 +381,15 @@ async def send_daily_news():
         acc = get_overall_accuracy()
         acc_str = f"\n📊 Signal Accuracy: {acc}%" if acc else ""
 
-        # Step 1: Send news to paid plans only
+        # Paid plans: send news
         news_configs = {
             "basic":    (300, "Write a SHORT 3-4 sentence daily market brief."),
             "standard": (500, "Write a MEDIUM 5-7 sentence daily market analysis covering BTC/ETH levels, altcoin sentiment, and outlook."),
             "premium":  (800, "Write a DETAILED analysis with sections: Market Overview, BTC & ETH Levels, Altcoin Sectors, Macro Factors, and Today's Outlook."),
         }
-
         for plan, (tokens, instruction) in news_configs.items():
             channel_id = CHANNELS.get(plan, 0)
             if not channel_id:
-                print(f"⚠️ No channel for {plan}")
                 continue
             try:
                 analysis = client.messages.create(
@@ -416,7 +397,6 @@ async def send_daily_news():
                     max_tokens=tokens,
                     messages=[{"role": "user", "content": f"You are a professional crypto analyst. {instruction}\nBTC: ${btc_price:,.2f} | Fear & Greed: {fg_val} ({fg_label}) | Date: {date_str}\nEnglish only. Professional tone."}]
                 ).content[0].text
-
                 bot = Bot(token=TELEGRAM_TOKEN)
                 news_msg = await bot.send_message(
                     chat_id=channel_id,
@@ -427,31 +407,30 @@ async def send_daily_news():
                     await bot.pin_chat_message(chat_id=channel_id, message_id=news_msg.message_id, disable_notification=True)
                 except:
                     pass
-                print(f"✅ News sent & pinned for {plan}")
+                print(f"✅ News sent to {plan}")
             except Exception as e:
                 print(f"❌ News error {plan}: {e}")
             await asyncio.sleep(2)
 
-        # Step 2: Send live + summary to ALL plans (including free)
+        # ALL plans: send live + summary
         for plan in ["free", "basic", "standard", "premium"]:
             channel_id = CHANNELS.get(plan, 0)
             if not channel_id:
-                print(f"⚠️ No channel for {plan}")
                 continue
             bot = Bot(token=TELEGRAM_TOKEN)
             try:
                 live_msg = await bot.send_message(chat_id=channel_id, text=build_live_message(plan), parse_mode="Markdown")
                 live_message_ids[plan] = live_msg.message_id
-                print(f"✅ Live message created for {plan}")
+                print(f"✅ Live created for {plan}")
             except Exception as e:
-                print(f"❌ Live message error {plan}: {e}")
+                print(f"❌ Live error {plan}: {e}")
             await asyncio.sleep(1)
             try:
-                summary_msg = await bot.send_message(chat_id=channel_id, text=build_summary_message(plan), parse_mode="Markdown")
-                summary_message_ids[plan] = summary_msg.message_id
-                print(f"✅ Summary message created for {plan}")
+                sum_msg = await bot.send_message(chat_id=channel_id, text=build_summary_message(plan), parse_mode="Markdown")
+                summary_message_ids[plan] = sum_msg.message_id
+                print(f"✅ Summary created for {plan}")
             except Exception as e:
-                print(f"❌ Summary message error {plan}: {e}")
+                print(f"❌ Summary error {plan}: {e}")
             await asyncio.sleep(1)
 
         print("✅ Daily news complete!")
@@ -461,8 +440,7 @@ async def send_daily_news():
 async def daily_news_scheduler():
     while True:
         now = datetime.utcnow()
-        target_h, target_m = 13, 30  # 9:30 AM ET = 13:30 UTC
-        target_secs = target_h * 3600 + target_m * 60
+        target_secs = 13 * 3600 + 30 * 60  # 9:30 AM ET = 13:30 UTC
         current_secs = now.hour * 3600 + now.minute * 60 + now.second
         wait = 86400 - (current_secs - target_secs) if current_secs >= target_secs else target_secs - current_secs
         print(f"⏰ Next daily news in {wait//3600}h {(wait%3600)//60}m (NY 09:30 ET)")
@@ -490,8 +468,8 @@ async def train_all_models():
     all_coins = list(set(c for coins in PLAN_COINS.values() for c in coins))
     for symbol in all_coins:
         try:
-            url = f"https://api.binance.com/api/v3/klines"
-            r = requests.get(url, params={"symbol": symbol.upper(), "interval": "1m", "limit": 1000}, timeout=15)
+            r = requests.get("https://api.binance.com/api/v3/klines",
+                           params={"symbol": symbol.upper(), "interval": "1m", "limit": 1000}, timeout=15)
             closes = [float(k[4]) for k in r.json()]
             if len(closes) < 100:
                 continue
@@ -501,9 +479,13 @@ async def train_all_models():
                 if len(window) < 30:
                     continue
                 candle_chg = ((window[-1] - window[-6]) / window[-6] * 100) if len(window) >= 6 else 0
-                features = extract_features(window, candle_chg, 0)
-                if not features:
-                    continue
+                ema9 = calc_ema(window, 9)
+                ema21 = calc_ema(window, 21)
+                ema_cross = (ema9 - ema21) / ema21 * 100 if ema21 else 0
+                last5 = window[-5:]
+                bull_c = sum(1 for j in range(1, len(last5)) if last5[j] > last5[j-1])
+                features = [calc_rsi(window), calc_macd(window)*1000, calc_momentum(window,10),
+                           calc_momentum(window,20), bull_c, ema_cross, candle_chg, 0, 50, abs(candle_chg)]
                 X.append(features)
                 y.append(1 if closes[i+15] > closes[i] else 0)
             if len(X) < 50:
@@ -516,24 +498,24 @@ async def train_all_models():
             X_test = scaler.transform(X[split:])
             model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42, n_jobs=-1)
             model.fit(X_train, y[:split])
-            preds = model.predict(X_test)
-            acc = sum(preds == y[split:]) / len(y[split:]) * 100
+            acc = sum(model.predict(X_test) == y[split:]) / len(y[split:]) * 100
             ml_models[symbol] = model
             ml_scalers[symbol] = scaler
             ml_accuracy[symbol] = round(acc, 1)
-            print(f"✅ {symbol} ML model trained — accuracy: {acc:.1f}%")
+            print(f"✅ {symbol} ML trained — {acc:.1f}%")
         except Exception as e:
-            print(f"❌ ML training error {symbol}: {e}")
+            print(f"❌ ML error {symbol}: {e}")
         await asyncio.sleep(1)
-    print(f"✅ ML training complete! {len(ml_models)} models ready")
+    print(f"✅ ML done! {len(ml_models)} models ready")
 
 async def retrain_scheduler():
     while True:
         await asyncio.sleep(86400)
         await train_all_models()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""👋 Hey! Welcome to GanoFlow.
+# ─── CHATBOT ──────────────────────────────────────────────────────────────────
+
+WELCOME_MSG = """👋 Hey! Welcome to GanoFlow.
 
 We send real-time crypto signals straight to your Telegram — 
 24/7, the moment the market moves.
@@ -551,7 +533,13 @@ Ready to start?
 
 📧 Questions? Ganoflow@proton.me
 
-⚠️ For reference only. Not financial advice.""")
+⚠️ For reference only. Not financial advice."""
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(WELCOME_MSG)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(WELCOME_MSG)
 
 async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 Calculating...")
@@ -567,21 +555,14 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tick_chg = ((btc - window[-1]) / window[-1] * 100) if window and window[-1] else 0
         chg = candle_chg + tick_chg
         fg_val, _ = get_fg()
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, price_history["btcusdt"], fg_val, "btcusdt")
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl, fg_val, "btcusdt")
         direction = "LONG 📈" if chg >= 0 else "SHORT 📉"
-        rsi_label = get_rsi_label(rsi)
         acc = get_overall_accuracy()
         acc_str = f"\n📊 Accuracy: *{acc}%*" if acc else ""
-        await update.message.reply_text(f"""📊 *BITCOIN SIGNAL — GanoFlow*
-━━━━━━━━━━━━━━━━━━━━
-💰 *{fmt(btc)}*
-📈 Change: *{chg:+.2f}%*
-━━━━━━━━━━━━━━━━━━━━
-*{direction}*
-🐂 UP *{up_pct:.3f}%* | 🐻 DOWN *{down_pct:.3f}%*
-📊 RSI *{rsi}* — {rsi_label}{acc_str}
-━━━━━━━━━━━━━━━━━━━━
-⚠️ DYOR. ganoflow.com""", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"📊 *BITCOIN SIGNAL — GanoFlow*\n━━━━━━━━━━━━━━━━━━━━\n💰 *{fmt(btc)}*\n📈 Change: *{chg:+.2f}%*\n━━━━━━━━━━━━━━━━━━━━\n*{direction}*\n🐂 UP *{up_pct:.3f}%* | 🐻 DOWN *{down_pct:.3f}%*\n📊 RSI *{rsi}* — {get_rsi_label(rsi)}{acc_str}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ DYOR. ganoflow.com",
+            parse_mode="Markdown"
+        )
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
@@ -598,35 +579,12 @@ async def prices_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""💎 *GanoFlow Plans*
-━━━━━━━━━━━━━━━━━━━━
-🆓 *Free* — BTC + ETH live
-⚡ *Basic* — $29/mo — Top 5 coins
-🚀 *Standard* — $59/mo — Top 7 coins
-👑 *Premium* — $99/mo — Top 10 coins
-━━━━━━━━━━━━━━━━━━━━
-🌐 https://ganoflow.com""", parse_mode="Markdown")
+    await update.message.reply_text(
+        "💎 *GanoFlow Plans*\n━━━━━━━━━━━━━━━━━━━━\n🆓 *Free* — BTC + ETH live\n⚡ *Basic* — $29/mo — Top 5 coins\n🚀 *Standard* — $59/mo — Top 7 coins\n👑 *Premium* — $99/mo — Top 10 coins\n━━━━━━━━━━━━━━━━━━━━\n🌐 https://ganoflow.com",
+        parse_mode="Markdown"
+    )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""👋 Hey! Welcome to GanoFlow.
-
-We send real-time crypto signals straight to your Telegram — 
-24/7, the moment the market moves.
-
-📊 What you get:
-— Live prices with Entry, TP1/TP2/TP3, Stop Loss
-— 🐂 UP / 🐻 DOWN probability (ML-powered)
-— 🐋 Whale activity tracking
-— 📊 Live signal accuracy tracking
-— Daily market analysis at 9:30 AM ET (paid plans)
-
-Ready to start?
-👉 ganoflow.com — pick your plan
-👉 /subscribe — see plan details
-
-📧 Questions? Ganoflow@proton.me
-
-⚠️ For reference only. Not financial advice.""")
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 async def main():
     print("🚀 GanoFlow Starting...")
