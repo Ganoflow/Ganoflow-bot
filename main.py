@@ -49,6 +49,7 @@ latest_prices = {}
 live_message_ids = {}
 summary_message_ids = {}
 fg_cache = {"value": "50", "label": "Neutral", "last_update": 0}
+prob_cache = {}  # {symbol: (up_pct, down_pct, timestamp)}
 signal_log = []
 
 try:
@@ -234,8 +235,8 @@ def build_live_message(plan):
         lines.append(f"PRICE　　　*{fmt(price)}*")
         lines.append(f"MOVE　　　*{chg:+.2f}%* ⚡")
         lines.append(f"DIRECTION　*{direction}*")
-        lines.append(f"🐂 UP　　　*{up_pct:.3f}%*")
-        lines.append(f"🐻 DOWN　*{down_pct:.3f}%*")
+        lines.append(f"🐂 UP　　　*{up_pct:.0f}%*")
+        lines.append(f"🐻 DOWN　*{down_pct:.0f}%*")
         if plan != "free":
             lines.append(f"ENTRY　　　*{fmt(e_low)} — {fmt(e_high)}*")
             lines.append(f"TP1/TP2/TP3　*{fmt(tp1)} / {fmt(tp2)} / {fmt(tp3)}*")
@@ -277,7 +278,7 @@ def build_summary_message(plan):
         tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
         up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl, fg_val, symbol)
         icon = "🐂" if up_pct >= down_pct else "🐻"
-        lines.append(f"{icon} *{sym}* — 🐂{up_pct:.3f}% 🐻{down_pct:.3f}%")
+        lines.append(f"{icon} *{sym}* — 🐂{up_pct:.0f}% 🐻{down_pct:.0f}%")
     if not has_data:
         lines.append("⏳ Loading market data...")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
@@ -598,7 +599,7 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         acc = get_overall_accuracy()
         acc_str = f"\n📊 Accuracy: *{acc}%*" if acc else ""
         await update.message.reply_text(
-            f"📊 *BITCOIN SIGNAL — GanoFlow*\n━━━━━━━━━━━━━━━━━━━━\n💰 *{fmt(btc)}*\n📈 Change: *{chg:+.2f}%*\n━━━━━━━━━━━━━━━━━━━━\n*{direction}*\n🐂 UP *{up_pct:.3f}%* | 🐻 DOWN *{down_pct:.3f}%*\n📊 RSI *{rsi}* — {get_rsi_label(rsi)}{acc_str}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ DYOR. ganoflow.com",
+            f"📊 *BITCOIN SIGNAL — GanoFlow*\n━━━━━━━━━━━━━━━━━━━━\n💰 *{fmt(btc)}*\n📈 Change: *{chg:+.2f}%*\n━━━━━━━━━━━━━━━━━━━━\n*{direction}*\n🐂 UP *{up_pct:.0f}%* | 🐻 DOWN *{down_pct:.0f}%*\n📊 RSI *{rsi}* — {get_rsi_label(rsi)}{acc_str}\n━━━━━━━━━━━━━━━━━━━━\n⚠️ DYOR. ganoflow.com",
             parse_mode="Markdown"
         )
     except Exception as e:
