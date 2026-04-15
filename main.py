@@ -317,7 +317,7 @@ async def live_updater():
 
     last_reset = time.time()
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
         # 24h reset
         if time.time() - last_reset > 86400:
             print("🔄 24h reset...")
