@@ -639,11 +639,6 @@ async def main():
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
     print("✅ Bot running!")
-    # ML training runs in background - doesn't block main loop
-    asyncio.create_task(train_all_models())
-    asyncio.create_task(track_signal_results())
-    asyncio.create_task(retrain_scheduler())
-
     await asyncio.gather(
         websocket_monitor(),
         live_updater(),
