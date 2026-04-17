@@ -49,6 +49,7 @@ latest_prices = {}
 live_message_ids = {}
 summary_message_ids = {}
 fg_cache = {"value": "50", "label": "Neutral", "last_update": 0}
+last_news_date = {"date": ""}  # prevent duplicate daily news
 prob_cache = {}  # {symbol: (up_pct, down_pct, timestamp)}
 signal_log = []
 
