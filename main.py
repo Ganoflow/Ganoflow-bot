@@ -220,12 +220,16 @@ def build_live_message(plan):
         has_data = True
         sym = symbol.replace("usdt", "").upper()
         pl = list(price_history[symbol])
-        rsi = calc_rsi(pl) if len(pl) >= 5 else 50.0
-        window = pl[-5:] if len(pl) >= 5 else pl
+        rsi = calc_rsi(pl) if len(pl) >= 3 else 50.0
+        window = pl[-5:] if len(pl) >= 2 else []
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
-        tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
+        # tick_chg: current price vs last candle, or vs itself slightly offset
+        if window and window[-1]:
+            tick_chg = ((price - window[-1]) / window[-1] * 100)
+        else:
+            tick_chg = 0
         chg = candle_chg + tick_chg
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl, fg_val, symbol)
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl if pl else None, fg_val, symbol)
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
         direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
         bull_icon = "🐂" if up_pct >= down_pct else "🐻"
@@ -279,11 +283,11 @@ def build_summary_message(plan):
         has_data = True
         sym = symbol.replace("usdt", "").upper()
         pl = list(price_history[symbol])
-        rsi = calc_rsi(pl) if len(pl) >= 5 else 50.0
-        window = pl[-5:] if len(pl) >= 5 else pl
+        rsi = calc_rsi(pl) if len(pl) >= 3 else 50.0
+        window = pl[-5:] if len(pl) >= 2 else []
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
         tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl, fg_val, symbol)
+        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl if pl else None, fg_val, symbol)
         icon = "🐂" if up_pct >= down_pct else "🐻"
         lines.append(f"{icon} *{sym}* — 🐂{up_pct:.0f}% 🐻{down_pct:.0f}%")
     if not has_data:
