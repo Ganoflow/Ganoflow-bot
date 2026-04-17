@@ -229,7 +229,13 @@ def build_live_message(plan):
         else:
             tick_chg = 0
         chg = candle_chg + tick_chg
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl if pl else None, fg_val, symbol)
+        # Use shared cache so ALL plans show same % for same coin
+        now_ts = time.time()
+        if symbol not in prob_cache or now_ts - prob_cache[symbol][2] > 3:
+            up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl if pl else None, fg_val, symbol)
+            prob_cache[symbol] = (up_pct, down_pct, now_ts)
+        else:
+            up_pct, down_pct = prob_cache[symbol][0], prob_cache[symbol][1]
         e_low, e_high, tp1, tp2, tp3, sl = calc_targets(price, chg)
         direction = "📈 LONG" if chg >= 0 else "📉 SHORT"
         bull_icon = "🐂" if up_pct >= down_pct else "🐻"
@@ -287,7 +293,12 @@ def build_summary_message(plan):
         window = pl[-5:] if len(pl) >= 2 else []
         candle_chg = ((window[-1] - window[0]) / window[0] * 100) if len(window) >= 2 else 0
         tick_chg = ((price - window[-1]) / window[-1] * 100) if window and window[-1] else 0
-        up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl if pl else None, fg_val, symbol)
+        now_ts = time.time()
+        if symbol not in prob_cache or now_ts - prob_cache[symbol][2] > 3:
+            up_pct, down_pct = calc_probability(rsi, candle_chg, tick_chg, pl if pl else None, fg_val, symbol)
+            prob_cache[symbol] = (up_pct, down_pct, now_ts)
+        else:
+            up_pct, down_pct = prob_cache[symbol][0], prob_cache[symbol][1]
         icon = "🐂" if up_pct >= down_pct else "🐻"
         lines.append(f"{icon} *{sym}* — 🐂{up_pct:.0f}% 🐻{down_pct:.0f}%")
     if not has_data:
