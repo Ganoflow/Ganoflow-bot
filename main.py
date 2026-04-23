@@ -166,10 +166,6 @@ def calc_probability(rsi, candle_chg, tick_chg, prices=None, fear_greed=50, symb
     elif fg < 40: up_base += 2
     elif fg > 75: up_base -= 5
     elif fg > 60: up_base -= 2
-    total = abs(tick_chg) + abs(candle_chg)
-    if total > 1.0:
-        amp = min(total * 2, 8)
-        up_base += amp if up_base > 50 else -amp
     # Volatility amplifier
     total_move = abs(tick_chg) + abs(candle_chg)
     if total_move > 1.0:
@@ -315,6 +311,10 @@ def build_summary_message(plan):
 async def live_updater():
     print("⏳ Live updater started...")
     await asyncio.sleep(15)  # wait for websocket data first
+
+    # Wait 30s so previous instance dies before creating new messages
+    print("⏳ Waiting 30s before init (prevent duplicate on redeploy)...")
+    await asyncio.sleep(30)
 
     # Create initial messages for all plans
     for plan in PLAN_COINS:
@@ -474,26 +474,7 @@ async def send_daily_news():
                 print(f"❌ News error {plan}: {e}")
             await asyncio.sleep(2)
 
-        # ALL plans: send live + summary
-        for plan in ["free", "basic", "standard", "premium"]:
-            channel_id = CHANNELS.get(plan, 0)
-            if not channel_id:
-                continue
-            bot = Bot(token=TELEGRAM_TOKEN)
-            try:
-                live_msg = await bot.send_message(chat_id=channel_id, text=build_live_message(plan), parse_mode="Markdown")
-                live_message_ids[plan] = live_msg.message_id
-                print(f"✅ Live created for {plan}")
-            except Exception as e:
-                print(f"❌ Live error {plan}: {e}")
-            await asyncio.sleep(1)
-            try:
-                sum_msg = await bot.send_message(chat_id=channel_id, text=build_summary_message(plan), parse_mode="Markdown")
-                summary_message_ids[plan] = sum_msg.message_id
-                print(f"✅ Summary created for {plan}")
-            except Exception as e:
-                print(f"❌ Summary error {plan}: {e}")
-            await asyncio.sleep(1)
+        # live_updater handles live/summary messages automatically
 
         print("✅ Daily news complete!")
     except Exception as e:
