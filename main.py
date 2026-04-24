@@ -447,7 +447,7 @@ async def send_daily_news():
         news_configs = {
             "basic":    (300, "Write a SHORT 3-4 sentence daily market brief."),
             "standard": (500, "Write a MEDIUM 5-7 sentence daily market analysis covering BTC/ETH levels, altcoin sentiment, and outlook."),
-            "premium":  (800, "Write a DETAILED analysis with sections: Market Overview, BTC & ETH Levels, Altcoin Sectors, Macro Factors, and Today's Outlook."),
+            "premium":  (500, "Write a concise professional analysis covering: Market Overview, BTC & ETH levels, and Today's Outlook. Keep it under 3000 characters."),
         }
         for plan, (tokens, instruction) in news_configs.items():
             channel_id = CHANNELS.get(plan, 0)
@@ -455,7 +455,7 @@ async def send_daily_news():
                 continue
             try:
                 analysis = client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-4-5",
                     max_tokens=tokens,
                     messages=[{"role": "user", "content": f"You are a professional crypto analyst. {instruction}\nBTC: ${btc_price:,.2f} | Fear & Greed: {fg_val} ({fg_label}) | Date: {date_str}\nEnglish only. Professional tone."}]
                 ).content[0].text
