@@ -445,9 +445,10 @@ async def send_daily_news():
 
         # Paid plans: send news
         news_configs = {
-            "basic":    (300, "Write a SHORT 3-4 sentence daily market brief."),
-            "standard": (500, "Write a MEDIUM 5-7 sentence daily market analysis covering BTC/ETH levels, altcoin sentiment, and outlook."),
-            "premium":  (500, "Write a concise professional analysis covering: Market Overview, BTC & ETH levels, and Today's Outlook. Keep it under 3000 characters."),
+            "free":     (150, "Write a very brief 1-2 sentence crypto market snapshot. Simple and clear."),
+            "basic":    (250, "Write a short 2-3 sentence daily market brief covering BTC and ETH levels."),
+            "standard": (400, "Write a medium 4-5 sentence daily market analysis covering BTC/ETH levels, altcoin sentiment, and today's outlook."),
+            "premium":  (500, "Write a professional analysis covering: Market Overview, BTC & ETH Levels, Altcoin Sectors, and Today's Outlook. Keep it under 3000 characters total."),
         }
         for plan, (tokens, instruction) in news_configs.items():
             channel_id = CHANNELS.get(plan, 0)
@@ -475,6 +476,29 @@ async def send_daily_news():
             await asyncio.sleep(2)
 
         # live_updater handles live/summary messages automatically
+
+        # After news → send new live+summary so they appear below news
+        print("📨 Sending new live+summary after news...")
+        await asyncio.sleep(2)
+        for plan in PLAN_COINS:
+            channel_id = CHANNELS.get(plan, 0)
+            if not channel_id:
+                continue
+            bot = Bot(token=TELEGRAM_TOKEN)
+            try:
+                msg = await bot.send_message(chat_id=channel_id, text=build_live_message(plan), parse_mode="Markdown")
+                live_message_ids[plan] = msg.message_id
+                print(f"✅ Live refreshed for {plan}")
+            except Exception as e:
+                print(f"❌ Live refresh error {plan}: {e}")
+            await asyncio.sleep(0.5)
+            try:
+                msg2 = await bot.send_message(chat_id=channel_id, text=build_summary_message(plan), parse_mode="Markdown")
+                summary_message_ids[plan] = msg2.message_id
+                print(f"✅ Summary refreshed for {plan}")
+            except Exception as e:
+                print(f"❌ Summary refresh error {plan}: {e}")
+            await asyncio.sleep(1)
 
         print("✅ Daily news complete!")
     except Exception as e:
