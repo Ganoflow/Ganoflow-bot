@@ -205,7 +205,9 @@ def log_signal(symbol, direction, price):
 def build_live_message(plan):
     coins = PLAN_COINS.get(plan, [])
     fg_val, fg_label = get_fg()
-    date_str = datetime.utcnow().strftime("%m/%d/%Y")
+    from datetime import timezone, timedelta
+    ET = timezone(timedelta(hours=-4))
+    date_str = datetime.now(ET).strftime("%m/%d/%Y")
     lines = [f"⚡ *LIVE — GanoFlow* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
 
     has_data = False
@@ -275,7 +277,9 @@ def build_live_message(plan):
 def build_summary_message(plan):
     coins = PLAN_COINS.get(plan, [])
     fg_val, _ = get_fg()
-    date_str = datetime.utcnow().strftime("%m/%d/%Y")
+    from datetime import timezone, timedelta
+    ET = timezone(timedelta(hours=-4))
+    date_str = datetime.now(ET).strftime("%m/%d/%Y")
     lines = [f"📊 *GanoFlow Summary* | {date_str}", "━━━━━━━━━━━━━━━━━━━━"]
     has_data = False
     for symbol in coins:
@@ -439,7 +443,9 @@ async def send_daily_news():
     try:
         fg_val, fg_label = get_fg()
         btc_price = latest_prices.get("btcusdt", 0)
-        date_str = datetime.now().strftime("%B %d, %Y")
+        from datetime import timezone, timedelta
+        ET = timezone(timedelta(hours=-4))
+        date_str = datetime.now(ET).strftime("%B %d, %Y")
         acc = get_overall_accuracy()
         acc_str = f"\n📊 Signal Accuracy: {acc}%" if acc else ""
 
