@@ -439,6 +439,14 @@ async def websocket_monitor():
 # ─── DAILY NEWS ───────────────────────────────────────────────────────────────
 
 async def send_daily_news():
+    global last_news_date
+    from datetime import timezone, timedelta
+    ET = timezone(timedelta(hours=-4))
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    if last_news_date["date"] == today:
+        print(f"⚠️ News already sent today ({today}), skipping...")
+        return
+    last_news_date["date"] = today
     print("📰 Daily news starting...")
     try:
         fg_val, fg_label = get_fg()
